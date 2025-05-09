@@ -11,12 +11,64 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
+import type { ProcessingStatus } from "@/lib/file-processing-status"
 
 export default function ChatInterface({ dataExists = false }: { dataExists?: boolean }) {
   const [inputValue, setInputValue] = useState("")
   const [localError, setLocalError] = useState<Error | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
+  const [processingStatus, setProcessingStatus] = useState<ProcessingStatus | null>(null)
+
+  // Fetch processing status periodically
+  useEffect(() => {
+    // Track if component is mounted
+    let isMounted = true;
+    let pollingActive = false;
+    let interval: NodeJS.Timeout | null = null;
+    
+    const fetchStatus = async () => {
+      try {
+        if (!isMounted) return;
+        
+        const response = await fetch("/api/processing-status")
+        if (response.ok) {
+          const status = await response.json()
+          setProcessingStatus(status)
+          
+          // If no longer processing, stop the frequent polling
+          if (!status.isProcessing && pollingActive) {
+            if (interval) clearInterval(interval);
+            pollingActive = false;
+            
+            // Check once every 15 seconds when idle
+            interval = setInterval(fetchStatus, 15000);
+          } else if (status.isProcessing && !pollingActive) {
+            // If processing started, increase polling frequency
+            if (interval) clearInterval(interval);
+            pollingActive = true;
+            
+            // Check every 3 seconds during active processing
+            interval = setInterval(fetchStatus, 3000);
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching processing status:", error)
+      }
+    }
+
+    // Initial fetch
+    fetchStatus()
+    
+    // Initial polling interval (less frequent)
+    interval = setInterval(fetchStatus, 15000)
+
+    // Cleanup function
+    return () => {
+      isMounted = false;
+      if (interval) clearInterval(interval);
+    }
+  }, [])
 
   const handleError = useCallback((error: Error) => {
     console.error("Chat error:", error)
@@ -61,6 +113,16 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
     e.preventDefault()
     // Clear any existing errors
     setLocalError(null)
+    
+    // Don't allow submitting if file processing is happening
+    if (processingStatus?.isProcessing) {
+      toast({
+        title: "Processing in progress",
+        description: "Please wait until file processing is complete before sending messages.",
+        variant: "destructive",
+      })
+      return
+    }
     
     if (inputValue.trim() && !isLoading) {
       try {
@@ -155,10 +217,17 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
           </div>
         ))}
 
-        {isLoading && (
+        {isLoading && !processingStatus?.isProcessing && (
           <div className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             <p className="text-sm">Analyzing inventory data...</p>
+          </div>
+        )}
+
+        {processingStatus?.isProcessing && (
+          <div className="flex items-center gap-2 text-blue-600">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <p className="text-sm">{processingStatus.progress?.message || "Processing file..."}</p>
           </div>
         )}
 
@@ -189,11 +258,13 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
           <Input
             value={inputValue}
             onChange={handleLocalInputChange}
-            placeholder="Ask about your inventory data..."
+            placeholder={processingStatus?.isProcessing 
+              ? "Please wait until processing completes..." 
+              : "Ask about your inventory data..."}
             className="flex-1"
-            disabled={isLoading}
+            disabled={isLoading || processingStatus?.isProcessing}
           />
-          <Button type="submit" disabled={!inputValue.trim() || isLoading}>
+          <Button type="submit" disabled={!inputValue.trim() || isLoading || processingStatus?.isProcessing}>
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             <span className="sr-only">Send</span>
           </Button>

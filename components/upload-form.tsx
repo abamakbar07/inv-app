@@ -24,8 +24,15 @@ export default function UploadForm() {
 
   // Fetch processing status periodically
   useEffect(() => {
+    // Track if component is mounted
+    let isMounted = true;
+    let pollingActive = false;
+    let interval: NodeJS.Timeout | null = null;
+    
     const fetchStatus = async () => {
       try {
+        if (!isMounted) return;
+        
         setStatusError(null)
         const response = await fetch("/api/processing-status")
 
@@ -48,10 +55,26 @@ export default function UploadForm() {
         // Update local state based on processing status
         if (status.isProcessing) {
           setIsUploading(true)
+          
+          // If processing started, increase polling frequency
+          if (!pollingActive) {
+            if (interval) clearInterval(interval);
+            pollingActive = true;
+            // Poll every 2 seconds during processing
+            interval = setInterval(fetchStatus, 2000);
+          }
         } else {
           setIsUploading(false)
           setIsClearing(false)
           setIsResetting(false)
+          
+          // If no longer processing, reduce polling frequency
+          if (pollingActive) {
+            if (interval) clearInterval(interval);
+            pollingActive = false;
+            // Poll every 10 seconds when idle
+            interval = setInterval(fetchStatus, 10000);
+          }
         }
       } catch (error) {
         console.error("Error fetching processing status:", error)
@@ -66,16 +89,27 @@ export default function UploadForm() {
         setIsUploading(false)
         setIsClearing(false)
         setIsResetting(false)
+        
+        // If error, reduce polling frequency
+        if (pollingActive) {
+          if (interval) clearInterval(interval);
+          pollingActive = false;
+          interval = setInterval(fetchStatus, 10000);
+        }
       }
     }
 
-    // Fetch immediately
+    // Initial fetch
     fetchStatus()
+    
+    // Initial polling interval (less frequent)
+    interval = setInterval(fetchStatus, 10000)
 
-    // Then fetch every 2 seconds
-    const interval = setInterval(fetchStatus, 2000)
-
-    return () => clearInterval(interval)
+    // Cleanup function
+    return () => {
+      isMounted = false;
+      if (interval) clearInterval(interval);
+    }
   }, [toast])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -104,7 +138,7 @@ export default function UploadForm() {
       toast({
         title: "Already Processing",
         description: "Another processing task is already running. Please wait for it to complete.",
-        variant: "warning",
+        variant: "default",
       })
       return
     }
@@ -150,13 +184,13 @@ export default function UploadForm() {
           toast({
             title: "Already Processing",
             description: result.message,
-            variant: "warning",
+            variant: "default",
           })
         } else {
           toast({
             title: "Upload partially successful",
             description: result.message,
-            variant: "warning",
+            variant: "default",
           })
         }
       }
@@ -178,7 +212,7 @@ export default function UploadForm() {
       toast({
         title: "Already Processing",
         description: "Another processing task is already running. Please wait for it to complete.",
-        variant: "warning",
+        variant: "default",
       })
       return
     }
@@ -204,7 +238,7 @@ export default function UploadForm() {
         toast({
           title: "Clear data failed",
           description: result.message,
-          variant: "warning",
+          variant: "default",
         })
       }
     } catch (error) {
@@ -223,7 +257,7 @@ export default function UploadForm() {
       toast({
         title: "Already Processing",
         description: "Another processing task is already running. Please wait for it to complete.",
-        variant: "warning",
+        variant: "default",
       })
       return
     }
