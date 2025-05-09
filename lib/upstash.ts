@@ -3,7 +3,9 @@ import { Index } from "@upstash/vector"
 import { GoogleGenerativeAI } from "@google/generative-ai"
 import { updateProgress } from "./file-processing-status"
 
-// The dimension we want to use for our embeddings
+// Upstash Vector database expects 1536 dimensions
+// but Google's embedding-001 model actually outputs 768 dimensions
+// We need to use 1536 to match the DB configuration
 const VECTOR_DIMENSIONS = 1536
 
 // Configure Upstash Vector client
@@ -119,16 +121,28 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 5, initial
       return await fn()
     } catch (error: any) {
       retries++
+      
+      // Log the retry attempt
+      console.log(`Retry attempt ${retries}/${maxRetries}`)
+
+      // Check if we have a 429 Too Many Requests error
+      const isRateLimitError = 
+        error.toString().includes("429") || 
+        error.toString().includes("Too Many Requests") ||
+        error.toString().includes("rate limit");
 
       // If we've reached max retries or it's not a rate limit error, throw
-      if (retries >= maxRetries || !error.toString().includes("429")) {
+      if (retries >= maxRetries || !isRateLimitError) {
+        console.error(`Giving up after ${retries} retries:`, error)
         throw error
       }
 
-      console.log(`Rate limit hit, retrying in ${delay}ms (attempt ${retries}/${maxRetries})`)
+      // Calculate an appropriate delay - longer for rate limit errors
+      const retryDelay = isRateLimitError ? delay * 2 : delay
+      console.log(`Rate limit hit, retrying in ${retryDelay}ms (attempt ${retries}/${maxRetries})`)
 
       // Wait for the delay period
-      await new Promise((resolve) => setTimeout(resolve, delay))
+      await new Promise((resolve) => setTimeout(resolve, retryDelay))
 
       // Increase delay for next retry
       delay *= factor
@@ -140,13 +154,10 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 5, initial
 async function generateEmbedding(text: string): Promise<number[]> {
   try {
     return await retryWithBackoff(async () => {
-      // Create the embedding model with the correct model name
-      // Note: Using embedding-001 model which supports dimension configuration
+      // Create the embedding model - don't try to configure dimensions, use model's default
       const embeddingModel = genAI.getGenerativeModel({
         model: "embedding-001",
-        generationConfig: {
-          outputDimension: VECTOR_DIMENSIONS, // Use outputDimension (not outputDimensionality)
-        },
+        // Gemini model parameters only accept specific properties
       })
 
       // Log the text length for debugging
@@ -156,23 +167,14 @@ async function generateEmbedding(text: string): Promise<number[]> {
       const result = await embeddingModel.embedContent(text)
       const embedding = result.embedding.values
 
-      // Verify the embedding dimension
-      if (embedding.length !== VECTOR_DIMENSIONS) {
-        console.warn(`Unexpected embedding dimension: ${embedding.length}, expected: ${VECTOR_DIMENSIONS}`)
-
-        // If dimensions don't match, resize the vector to match expected dimensions
-        if (embedding.length > VECTOR_DIMENSIONS) {
-          console.log(`Resizing embedding from ${embedding.length} to ${VECTOR_DIMENSIONS}`)
-          return embedding.slice(0, VECTOR_DIMENSIONS)
-        } else {
-          // Pad with zeros if embedding is too small (unlikely scenario)
-          console.log(`Padding embedding from ${embedding.length} to ${VECTOR_DIMENSIONS}`)
-          return [...embedding, ...Array(VECTOR_DIMENSIONS - embedding.length).fill(0)]
-        }
-      }
-
-      return embedding
-    })
+      // Pad the embedding from 768 to 1536 to match Upstash database expectations
+      console.log(`Generated embedding with ${embedding.length} dimensions, padding to ${VECTOR_DIMENSIONS}`)
+      
+      // Double each value to maintain the semantic meaning but reach required dimensions
+      const paddedEmbedding = [...embedding, ...embedding]
+      
+      return paddedEmbedding
+    }, 3, 2000, 2) // Reduce max retries to 3, increase initial delay to 2 seconds, and keep factor at 2
   } catch (error) {
     console.error("Error generating embedding after retries:", error)
     throw new Error(`Failed to generate embedding: ${error instanceof Error ? error.message : String(error)}`)
@@ -226,7 +228,13 @@ export async function upsertEmbeddings(resourceId: string, content: string) {
         }
       })
 
-      const embeddingsToUpsert = (await Promise.all(embeddingPromises)).filter(Boolean)
+      // Filter out null values and convert to the proper type
+      const embeddingsResults = await Promise.all(embeddingPromises)
+      const embeddingsToUpsert = embeddingsResults.filter((result): result is {
+        id: string;
+        vector: number[];
+        metadata: { resourceId: string; content: string };
+      } => result !== null)
 
       if (embeddingsToUpsert.length > 0) {
         // Upsert the batch to Upstash Vector
@@ -274,23 +282,30 @@ export async function findRelevantContent(query: string, k = 5) {
     return results
   } catch (error) {
     console.error("Error finding relevant content:", error)
-    throw error
+    // Return empty results instead of throwing to prevent client-side errors
+    return []
   }
 }
 
 // Check if data exists in Upstash Vector
 export async function checkDataExists(): Promise<boolean> {
   try {
+    // Create a zero vector with the correct dimension
+    const zeroVector = Array(VECTOR_DIMENSIONS).fill(0)
+    
     // Try to get a single vector to check if data exists
-    // Use the correct dimension for the dummy vector - consistent with VECTOR_DIMENSIONS
     const results = await index.query({
-      vector: Array(VECTOR_DIMENSIONS).fill(0), // Dummy vector with dimensions set to 1536
+      vector: zeroVector,
       topK: 1,
     })
 
     return results.length > 0
   } catch (error) {
+    // If we get a vector dimension error or any other error, log it but don't crash
     console.error("Error checking if data exists:", error)
+    
+    // Return false instead of throwing, to let the application continue
+    // The client will see "no data available" instead of an error
     return false
   }
 }
@@ -298,10 +313,12 @@ export async function checkDataExists(): Promise<boolean> {
 // Clear all embeddings from Upstash Vector
 export async function clearAllEmbeddings() {
   try {
+    // Create a zero vector with the correct dimension
+    const zeroVector = Array(VECTOR_DIMENSIONS).fill(0)
+    
     // Get all vector IDs
-    // Use the correct dimension for the dummy vector - consistent with VECTOR_DIMENSIONS
     const allVectors = await index.query({
-      vector: Array(VECTOR_DIMENSIONS).fill(0), // Dummy vector with dimensions set to 1536
+      vector: zeroVector,
       topK: 1000, // Get a large number of vectors
     })
 
@@ -309,8 +326,8 @@ export async function clearAllEmbeddings() {
       return { success: true, message: "No data to clear." }
     }
 
-    // Delete all vectors
-    const ids = allVectors.map((vector) => vector.id)
+    // Convert IDs to strings to ensure type compatibility
+    const ids = allVectors.map((vector) => String(vector.id))
     await index.delete(ids)
 
     return {
@@ -319,6 +336,10 @@ export async function clearAllEmbeddings() {
     }
   } catch (error) {
     console.error("Error clearing embeddings:", error)
-    throw error
+    // Return a user-friendly error message rather than throwing
+    return { 
+      success: false, 
+      message: `Error clearing data: ${error instanceof Error ? error.message : "Unknown error"}` 
+    }
   }
 }

@@ -2,8 +2,8 @@
 
 import type React from "react"
 
-import { useState, useRef, useEffect } from "react"
-import { useChat } from "ai/react"
+import { useState, useRef, useEffect, useCallback } from "react"
+import { useChat, type Message } from "ai/react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Loader2, Send, AlertCircle, RefreshCw } from "lucide-react"
@@ -14,10 +14,21 @@ import { useToast } from "@/hooks/use-toast"
 
 export default function ChatInterface({ dataExists = false }: { dataExists?: boolean }) {
   const [inputValue, setInputValue] = useState("")
+  const [localError, setLocalError] = useState<Error | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error, reload } = useChat({
+  const handleError = useCallback((error: Error) => {
+    console.error("Chat error:", error)
+    setLocalError(error)
+    toast({
+      title: "Chat Error",
+      description: error.message || "An error occurred while processing your request.",
+      variant: "destructive",
+    })
+  }, [toast])
+
+  const { messages, input, handleInputChange, handleSubmit, isLoading, error, reload, setMessages } = useChat({
     api: "/api/chat",
     initialMessages: [
       {
@@ -27,13 +38,17 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
           "Hello! I'm your Inventory Analyst assistant. Ask me anything about your inventory data, and I'll help you analyze it.",
       },
     ],
-    onError: (error) => {
-      console.error("Chat error:", error)
-      toast({
-        title: "Chat Error",
-        description: error.message || "An error occurred while processing your request.",
-        variant: "destructive",
-      })
+    onError: handleError,
+    onResponse: (response) => {
+      // Clear local error when we get a successful response
+      if (response.status === 200) {
+        setLocalError(null)
+      }
+    },
+    // Add parse options to customize how the streams are handled
+    body: {
+      // Include any custom parameters your backend might need
+      format: "sse", // Specify that we're expecting SSE format
     },
   })
 
@@ -44,9 +59,16 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    // Clear any existing errors
+    setLocalError(null)
+    
     if (inputValue.trim() && !isLoading) {
-      handleSubmit(e)
-      setInputValue("")
+      try {
+        handleSubmit(e)
+        setInputValue("")
+      } catch (err) {
+        handleError(err instanceof Error ? err : new Error("Failed to send message"))
+      }
     }
   }
 
@@ -62,8 +84,31 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
   }
 
   const handleRetry = () => {
+    setLocalError(null)
     if (reload) {
-      reload()
+      try {
+        reload()
+      } catch (err) {
+        handleError(err instanceof Error ? err : new Error("Failed to retry"))
+      }
+    }
+  }
+
+  // Manual fallback for when an AI response fails
+  const handleManualFallback = () => {
+    // Get the last user message
+    const lastUserMessage = messages.findLast(m => m.role === 'user')
+    
+    if (lastUserMessage) {
+      // Add a fallback response
+      const fallbackResponse: Message = {
+        id: `fallback-${Date.now()}`,
+        role: 'assistant',
+        content: "I'm having trouble connecting to my knowledge base. Please try asking a different question or try again later."
+      }
+      
+      setMessages([...messages, fallbackResponse])
+      setLocalError(null)
     }
   }
 
@@ -117,16 +162,21 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
           </div>
         )}
 
-        {error && (
+        {(error || localError) && (
           <Alert variant="destructive" className="mt-4">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Error</AlertTitle>
             <AlertDescription className="flex flex-col gap-2">
-              <span>{error.message || "An error occurred while processing your request."}</span>
-              <Button size="sm" variant="outline" onClick={handleRetry} className="self-start">
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Retry
-              </Button>
+              <span>{(error || localError)?.message || "An error occurred while processing your request."}</span>
+              <div className="flex gap-2 mt-2">
+                <Button size="sm" variant="outline" onClick={handleRetry} className="self-start">
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Retry
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleManualFallback} className="self-start">
+                  Continue anyway
+                </Button>
+              </div>
             </AlertDescription>
           </Alert>
         )}
