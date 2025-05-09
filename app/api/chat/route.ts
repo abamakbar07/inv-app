@@ -36,7 +36,7 @@ export async function POST(req: Request) {
       )
     }
 
-    // Extract the last user message for context retrieval
+    // Extract only the last user message - don't send entire history to the model
     const lastUserMessage = messages[messages.length - 1].content
 
     // Get relevant context first before streaming
@@ -100,51 +100,9 @@ export async function POST(req: Request) {
         },
       })
 
-      // For the first chat interaction, don't use history
-      // Avoid the error "First content should be with role 'user', got model"
-      let chat;
-      
-      // Check if this is the first message or if we have previous history
-      const previousUserMessages = messages.filter((m: ChatMessage) => 
-        m.role === "user" && m.id !== messages[messages.length - 1].id
-      );
-      
-      if (previousUserMessages.length === 0) {
-        // First interaction - no history needed
-        console.log("First interaction - starting chat without history");
-        chat = model.startChat();
-      } else {
-        // We have prior messages - create a simplified history
-        // Just take the most recent user-assistant exchange if available
-        console.log("Creating chat with simplified history");
-        
-        // Find the latest user message before the current one
-        const prevUserMessage = previousUserMessages[previousUserMessages.length - 1];
-        
-        // Find the assistant response to that message if it exists
-        const assistantIndex = messages.findIndex((m: ChatMessage) => m.id === prevUserMessage.id);
-        const prevAssistantMessage = assistantIndex >= 0 && assistantIndex + 1 < messages.length - 1 
-          ? messages[assistantIndex + 1] 
-          : null;
-        
-        // Create a simple history with just one exchange to avoid errors
-        const history = [
-          {
-            role: "user",
-            parts: [{ text: prevUserMessage.content }]
-          }
-        ];
-        
-        // Only add assistant message if we found a valid one
-        if (prevAssistantMessage && prevAssistantMessage.role === "assistant") {
-          history.push({
-            role: "model",
-            parts: [{ text: prevAssistantMessage.content }]
-          });
-        }
-        
-        chat = model.startChat({ history });
-      }
+      // Don't use chat history - this is a stateless implementation
+      // Create a fresh chat for each query
+      const chat = model.startChat();
       
       // Prepare the final prompt with system message + user query
       const finalPrompt = `${systemPrompt}\n\nUser query: ${lastUserMessage}`
@@ -166,6 +124,7 @@ export async function POST(req: Request) {
           "Content-Type": "application/json"
         }
       });
+      
     } catch (error) {
       console.error("Error generating response:", error)
       return new Response(
