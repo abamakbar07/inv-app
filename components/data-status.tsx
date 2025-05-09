@@ -3,43 +3,47 @@
 import { useEffect, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 
-export function DataStatus({ initialStatus = false }: { initialStatus?: boolean }) {
-  const [dataExists, setDataExists] = useState(initialStatus)
-  const [isLoading, setIsLoading] = useState(false)
+interface DataStatusProps {
+  initialStatus?: boolean;
+  hasError?: boolean;
+}
+
+export function DataStatus({ initialStatus = false, hasError = false }: DataStatusProps) {
+  const [dataExists, setDataExists] = useState<boolean>(initialStatus)
 
   useEffect(() => {
-    const checkStatus = async () => {
-      setIsLoading(true)
+    async function checkStatus() {
       try {
-        const response = await fetch("/api/data-status")
-        const data = await response.json()
-        setDataExists(data.dataExists)
+        const response = await fetch('/api/data-status')
+        if (response.ok) {
+          const { exists } = await response.json()
+          setDataExists(exists)
+        }
       } catch (error) {
-        console.error("Error checking data status:", error)
-      } finally {
-        setIsLoading(false)
+        console.error('Error checking data status:', error)
       }
     }
 
     checkStatus()
   }, [])
 
+  if (hasError) {
+    return (
+      <div className="mb-4 p-3 bg-red-50 text-red-700 border border-red-200 rounded">
+        <h3 className="font-medium">Database Connection Error</h3>
+        <p className="text-sm">Unable to check data status. There might be an issue with your vector database connection.</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="mb-4">
-      <p className="text-sm font-medium mb-2">Data Status:</p>
-      {isLoading ? (
-        <Badge variant="outline" className="bg-gray-100">
-          Checking...
-        </Badge>
-      ) : dataExists ? (
-        <Badge variant="default" className="bg-green-500">
-          Data Available
-        </Badge>
-      ) : (
-        <Badge variant="outline" className="bg-yellow-100 text-yellow-800 border-yellow-300">
-          No Data Available
-        </Badge>
-      )}
+    <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded">
+      <h3 className="font-medium">Data Status</h3>
+      <p className="text-sm">
+        {dataExists
+          ? 'Inventory data is available for analysis.'
+          : 'No inventory data has been uploaded yet.'}
+      </p>
     </div>
   )
 }

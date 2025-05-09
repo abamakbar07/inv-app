@@ -45,10 +45,20 @@ export async function POST(req: Request) {
       console.log("Retrieving relevant context for:", lastUserMessage)
       relevantContext = await findRelevantContent(lastUserMessage)
       console.log(`Found ${relevantContext.length} relevant context items`)
+      
+      // If no relevant context found, we should provide a specific message
+      if (relevantContext.length === 0) {
+        console.log("No relevant context found, but proceeding with empty context")
+      }
     } catch (error) {
       console.error("Error retrieving context:", error)
-      // Continue without context if retrieval fails
-      relevantContext = []
+      // Instead of continuing with empty context, we'll return an error response
+      return new Response(
+        JSON.stringify({
+          error: `Error retrieving context: ${error instanceof Error ? error.message : "Unknown error"}. Please try again.`,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      )
     }
 
     // Format the context for the prompt, with careful null/undefined checks
@@ -68,6 +78,9 @@ export async function POST(req: Request) {
     Only answer questions based on the provided context from the user's inventory data.
     If you don't have relevant information in the context, say "I don't have enough information about that in your inventory data."
     Be concise, helpful, and accurate.
+    
+    Important: You can respond in multiple languages. If the user asks in a language other than English, 
+    respond in the same language they used for their query.
     
     Here is the relevant inventory data context:
     ${contextText}`
@@ -142,28 +155,17 @@ export async function POST(req: Request) {
       const text = await result.response.text();
       console.log("Received response from Gemini");
       
-      // Create a proper format for Vercel AI SDK
-      // The Vercel AI SDK expects a specific format with "data: " prefix for each line
-      const encoder = new TextEncoder();
+      // Use a safe JSON.stringify approach to ensure valid JSON
+      const responseObj = { text };
+      const safeJsonString = JSON.stringify(responseObj);
       
-      // Format the response in the exact format expected by the Vercel AI SDK
-      return new Response(
-        encoder.encode(
-          // Start with open delimiter
-          `data: ${JSON.stringify({ type: "open", content: "" })}\n\n` +
-          // Then add a chunk with the full response text
-          `data: ${JSON.stringify({ type: "chunk", content: text })}\n\n` +
-          // End with close delimiter
-          `data: ${JSON.stringify({ type: "close", content: "" })}\n\n`
-        ),
-        {
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-          },
+      // Return the response as properly formatted JSON
+      return new Response(safeJsonString, { 
+        status: 200,
+        headers: { 
+          "Content-Type": "application/json"
         }
-      );
+      });
     } catch (error) {
       console.error("Error generating response:", error)
       return new Response(

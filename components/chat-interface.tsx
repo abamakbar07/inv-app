@@ -13,12 +13,20 @@ import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import type { ProcessingStatus } from "@/lib/file-processing-status"
 
-export default function ChatInterface({ dataExists = false }: { dataExists?: boolean }) {
+export default function ChatInterface({ 
+  dataExists = false,
+  hasError = false 
+}: { 
+  dataExists?: boolean;
+  hasError?: boolean;
+}) {
   const [inputValue, setInputValue] = useState("")
   const [localError, setLocalError] = useState<Error | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus | null>(null)
+  const [isCustomHandling, setIsCustomHandling] = useState(false);
+  const [fallbackMessages, setFallbackMessages] = useState<Message[]>([]);
 
   // Fetch processing status periodically
   useEffect(() => {
@@ -70,16 +78,7 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
     }
   }, [])
 
-  const handleError = useCallback((error: Error) => {
-    console.error("Chat error:", error)
-    setLocalError(error)
-    toast({
-      title: "Chat Error",
-      description: error.message || "An error occurred while processing your request.",
-      variant: "destructive",
-    })
-  }, [toast])
-
+  // First, define the chat hook
   const { messages, input, handleInputChange, handleSubmit, isLoading, error, reload, setMessages } = useChat({
     api: "/api/chat",
     initialMessages: [
@@ -90,19 +89,120 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
           "Hello! I'm your Inventory Analyst assistant. Ask me anything about your inventory data, and I'll help you analyze it.",
       },
     ],
-    onError: handleError,
-    onResponse: (response) => {
+    onError: (error) => handleErrorWithContext(error, messages, setMessages),
+    onResponse: async (response) => {
       // Clear local error when we get a successful response
       if (response.status === 200) {
         setLocalError(null)
+        
+        try {
+          // Try to parse the response as JSON
+          const data = await response.clone().json();
+          
+          // If we have text in the response, manually add it as a message
+          if (data && data.text) {
+            // Signal that we're handling this response manually
+            setIsCustomHandling(true);
+            
+            // Wait a short time to ensure any pending message updates are processed
+            setTimeout(() => {
+              // Create a new message ID
+              const messageId = Math.random().toString(36).substring(2, 12);
+              
+              // Add the message manually
+              setMessages((currentMessages) => {
+                // Only add if there isn't already a matching assistant message at the end
+                const lastMessage = currentMessages[currentMessages.length - 1];
+                if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content === data.text) {
+                  return currentMessages;
+                }
+                
+                return [
+                  ...currentMessages,
+                  {
+                    id: messageId,
+                    role: "assistant",
+                    content: data.text,
+                  },
+                ];
+              });
+              
+              // Reset the custom handling flag
+              setIsCustomHandling(false);
+            }, 100);
+          }
+        } catch (e) {
+          console.error("Error parsing response:", e);
+          // Let the default handler try to handle it
+        }
+      } else {
+        // Handle non-200 responses
+        setLocalError(new Error(`Server returned status ${response.status}`))
       }
     },
-    // Add parse options to customize how the streams are handled
-    body: {
-      // Include any custom parameters your backend might need
-      format: "sse", // Specify that we're expecting SSE format
-    },
+    body: {},
   })
+
+  // Then define the error handler function that uses the context
+  const handleErrorWithContext = useCallback((error: Error, currentMessages: Message[], setCurrentMessages: (messages: Message[]) => void) => {
+    console.error("Chat error:", error)
+    setLocalError(error)
+    
+    // Check if it's a stream parsing error or JSON parsing error
+    if (
+      error.message.includes("parse stream") || 
+      error.message.includes("Invalid code") ||
+      error.message.includes("JSON")
+    ) {
+      console.log("Parsing error detected - trying fallback response")
+      // Get the last user message
+      const lastUserMessage = currentMessages.findLast(m => m.role === 'user')
+      
+      // Add a fallback response based on the query language
+      if (lastUserMessage) {
+        // Simple language detection - check if it contains non-Latin characters or common non-English words
+        const isNonEnglish = /[^\x00-\x7F]/.test(lastUserMessage.content) || 
+                            /berapa|jenis|ada|pada/.test(lastUserMessage.content);
+        
+        let fallbackContent = "";
+        if (isNonEnglish) {
+          fallbackContent = `Pertanyaan Anda "${lastUserMessage.content}" terdeteksi, tetapi saya mengalami masalah saat memformat respons. Silakan coba ungkapkan pertanyaan Anda dengan cara yang berbeda atau periksa data inventaris Anda.`;
+        } else {
+          fallbackContent = `I found your query about "${lastUserMessage.content}" but encountered a formatting issue. Please try rephrasing your question.`;
+        }
+        
+        // Create fallback response
+        const fallbackResponse: Message = {
+          id: `fallback-${Date.now()}`,
+          role: 'assistant',
+          content: fallbackContent
+        }
+        
+        // Set the message and clear the error
+        setCurrentMessages([...currentMessages, fallbackResponse])
+        setLocalError(null)
+      }
+      
+      // Show a more helpful toast message
+      toast({
+        title: "Response Format Error",
+        description: "There was an issue with the response format. Using fallback response.",
+        variant: "destructive",
+      })
+    } else {
+      // For other errors, show the original error
+      toast({
+        title: "Chat Error",
+        description: error.message || "An error occurred while processing your request.",
+        variant: "destructive",
+      })
+    }
+  }, [toast])
+
+  // The legacy handleError function that calls the new one
+  const handleError = useCallback((error: Error) => {
+    handleErrorWithContext(error, messages, setMessages);
+  }, [handleErrorWithContext, messages, setMessages])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -162,16 +262,34 @@ export default function ChatInterface({ dataExists = false }: { dataExists?: boo
     const lastUserMessage = messages.findLast(m => m.role === 'user')
     
     if (lastUserMessage) {
-      // Add a fallback response
+      // Add a more helpful fallback response with context
       const fallbackResponse: Message = {
         id: `fallback-${Date.now()}`,
         role: 'assistant',
-        content: "I'm having trouble connecting to my knowledge base. Please try asking a different question or try again later."
+        content: `I found your query about "${lastUserMessage.content}" in our database, but had trouble formatting the response. Please try rephrasing your question or check your inventory data.`
       }
       
+      // Set the message and clear the error
       setMessages([...messages, fallbackResponse])
       setLocalError(null)
+      
+      // Also log this event to help with debugging
+      console.log(`Applied fallback response for query: "${lastUserMessage.content}"`)
     }
+  }
+
+  if (hasError) {
+    return (
+      <div className="p-6">
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Database Connection Error</AlertTitle>
+          <AlertDescription>
+            There's an issue connecting to the vector database. Please check your database configuration and try again.
+          </AlertDescription>
+        </Alert>
+      </div>
+    )
   }
 
   if (!dataExists) {

@@ -269,8 +269,11 @@ export async function upsertEmbeddings(resourceId: string, content: string) {
 // Find relevant content based on a query with retry logic
 export async function findRelevantContent(query: string, k = 5) {
   try {
+    console.log("Finding relevant content for query:", query)
+    
     // Generate embedding for the query with retry logic
     const queryEmbedding = await generateEmbedding(query)
+    console.log("Generated query embedding successfully")
 
     // Query Upstash Vector for similar content
     const results = await index.query({
@@ -279,34 +282,50 @@ export async function findRelevantContent(query: string, k = 5) {
       includeMetadata: true,
     })
 
+    console.log(`Found ${results.length} relevant items`)
+    
+    // If no results are found, this could be useful information
+    if (results.length === 0) {
+      console.log("No relevant content found in the database")
+    }
+
     return results
   } catch (error) {
     console.error("Error finding relevant content:", error)
-    // Return empty results instead of throwing to prevent client-side errors
-    return []
+    // Instead of returning an empty array, throw the error
+    // This will be handled appropriately in the chat API
+    throw new Error(`Failed to retrieve relevant content: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
 // Check if data exists in Upstash Vector
 export async function checkDataExists(): Promise<boolean> {
   try {
+    console.log("Checking if data exists in Upstash Vector")
+    
     // Create a zero vector with the correct dimension
     const zeroVector = Array(VECTOR_DIMENSIONS).fill(0)
     
-    // Try to get a single vector to check if data exists
+    // Try to get multiple vectors to ensure we have a valid result
     const results = await index.query({
       vector: zeroVector,
-      topK: 1,
+      topK: 10,  // Increased from 1 to get a better sample
     })
+
+    console.log(`Database check: Found ${results.length} vectors in the database`)
+    
+    if (results.length > 0) {
+      // Log a sample of what we found for debugging
+      console.log("Sample vector ID:", results[0].id)
+    }
 
     return results.length > 0
   } catch (error) {
     // If we get a vector dimension error or any other error, log it but don't crash
     console.error("Error checking if data exists:", error)
     
-    // Return false instead of throwing, to let the application continue
-    // The client will see "no data available" instead of an error
-    return false
+    // Throw the error to propagate it upward
+    throw new Error(`Failed to check database: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
