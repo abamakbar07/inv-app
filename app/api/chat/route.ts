@@ -142,7 +142,10 @@ export async function POST(req: Request) {
       
       // Use the model with free tier quota instead of the preview version
       const model = genAI.getGenerativeModel({
-        model: "gemini-2.5-flash-preview-04-17", // Use the Experimental model with free tier
+        // model: "gemini-2.5-flash-preview-04-17", // Use the Experimental model with free tier
+        // model: "gemini-2.5-pro-preview-05-06", // Use the Experimental model with free tier
+        model: "gemini-2.5-pro-exp-03-25", // Use the Experimental model with free tier
+
         generationConfig: {
           temperature: 0.7,
           topP: 0.95,
