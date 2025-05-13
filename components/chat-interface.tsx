@@ -14,7 +14,7 @@ import { useToast } from "@/hooks/use-toast"
 import type { ProcessingStatus } from "@/lib/file-processing-status"
 
 // Define types for different message sources
-type MessageSource = 'ai' | 'system-error' | 'model-error' | 'user';
+type MessageSource = 'ai' | 'system-error' | 'model-error' | 'user' | 'no-data-found';
 
 // Enhanced message type with source information
 interface EnhancedMessage extends Message {
@@ -97,7 +97,7 @@ export default function ChatInterface({
         id: "welcome",
         role: "assistant",
         content:
-          "Hello! I'm your Inventory Analyst assistant. Ask me anything about your inventory data, and I'll help you analyze it.",
+          "Hello! I'm your Inventory Analyst assistant. Ask me questions like:\n\n• Where is material [code] located?\n• What quantities of [material] do we have?\n• What's in location [warehouse]?\n\nI can respond in English or Indonesian.",
       },
     ],
     onError: (error) => handleErrorWithContext(error, messages, setMessages),
@@ -166,7 +166,14 @@ export default function ChatInterface({
             // Create a new message ID
             const messageId = Math.random().toString(36).substring(2, 12)
             
-            // Add the message manually
+            // Check if the response indicates "not found" and mark it as such
+            const isNoDataFound = 
+              (data.text.includes("couldn't find any data about") || 
+               data.text.includes("tidak dapat menemukan data tentang") ||
+               data.text.includes("tidak ditemukan")) &&
+              !data.text.includes(" is at ");
+              
+            // Add the message manually with appropriate source
             setMessages((currentMessages) => {
               // Only add if there isn't already a matching assistant message at the end
               const lastMessage = currentMessages[currentMessages.length - 1]
@@ -183,6 +190,14 @@ export default function ChatInterface({
                 },
               ]
             })
+            
+            // Add the enhanced message with the appropriate source
+            addEnhancedMessage({
+              id: messageId,
+              role: "assistant",
+              content: data.text,
+              source: isNoDataFound ? 'no-data-found' : 'ai'
+            });
             
             // Reset the custom handling flag
             setIsCustomHandling(false)
@@ -264,8 +279,8 @@ export default function ChatInterface({
                         (currentMessages.findLast(m => m.role === 'user')?.content || "your query")
       
       // Improved language detection - more robust patterns for Indonesian and other languages
-      const isNonEnglish = /[^\x00-\x7F]/.test(queryText) || 
-                           /berapa|jenis|ada|pada|dimana|lokasi|beritahu|aku|beserta/.test(queryText.toLowerCase())
+      const isIndonesian = /[^\x00-\x7F]/.test(queryText) || 
+                          /berapa|jenis|ada|pada|dimana|lokasi|beritahu|aku|beserta|tidak|bisa|dapat|diketahui/.test(queryText.toLowerCase())
       
       // First, try to recover from the buffer if possible
       if (jsonBuffer && jsonBuffer.length > 5) {
@@ -324,10 +339,20 @@ export default function ChatInterface({
       setJsonBuffer("");
       
       let fallbackContent = ""
-      if (isNonEnglish) {
-        fallbackContent = `Pertanyaan Anda "${queryText}" terdeteksi, tetapi saya mengalami masalah saat memformat respons. Silakan coba ungkapkan pertanyaan Anda dengan cara yang berbeda atau periksa data inventaris Anda.`
+      if (isIndonesian) {
+        // More specific Indonesian fallback message for material queries
+        if (queryText.toLowerCase().includes("material") || queryText.toLowerCase().includes("lokasi") || /[A-Z0-9]{3,}/.test(queryText)) {
+          fallbackContent = `Maaf, saya mengalami masalah saat mencari material "${queryText.replace(/lokasi|dimana|berada|beritahu|aku/gi, '').trim()}". Pastikan kode material yang Anda masukkan benar dan ada di database inventaris. Coba pertanyaan lain atau perbaiki kode material.`
+        } else {
+          fallbackContent = `Pertanyaan Anda "${queryText}" terdeteksi, tetapi saya mengalami masalah saat memformat respons. Silakan coba ungkapkan pertanyaan Anda dengan cara yang berbeda atau periksa data inventaris Anda.`
+        }
       } else {
-        fallbackContent = `I found your query about "${queryText}" but encountered a formatting issue. Please try rephrasing your question.`
+        // More specific English fallback message for material queries
+        if (queryText.toLowerCase().includes("material") || queryText.toLowerCase().includes("location") || /[A-Z0-9]{3,}/.test(queryText)) {
+          fallbackContent = `Sorry, I had trouble finding material "${queryText.replace(/where|is|location|of/gi, '').trim()}". Please verify the material code is correct and exists in your inventory database. Try another question or correct the material code.`
+        } else {
+          fallbackContent = `I found your query about "${queryText}" but encountered a formatting issue. Please try rephrasing your question.`
+        }
       }
       
       // Add as a model error message
@@ -595,6 +620,8 @@ export default function ChatInterface({
           return "bg-amber-50 border border-amber-200 text-amber-800";
         case 'system-error':
           return "bg-red-50 border border-red-200 text-red-800";
+        case 'no-data-found':
+          return "bg-orange-50 border border-orange-200 text-orange-800";  
         default:
           return "bg-muted";
       }
@@ -622,6 +649,14 @@ export default function ChatInterface({
             <Avatar className="h-8 w-8">
               <AvatarFallback className="bg-red-200 text-red-800">
                 <AlertTriangle className="h-4 w-4" />
+              </AvatarFallback>
+            </Avatar>
+          );
+        case 'no-data-found':
+          return (
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="bg-orange-200 text-orange-800">
+                <AlertCircle className="h-4 w-4" />
               </AvatarFallback>
             </Avatar>
           );

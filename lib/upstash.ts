@@ -173,6 +173,28 @@ async function generateEmbedding(text: string): Promise<number[]> {
       // Double each value to maintain the semantic meaning but reach required dimensions
       const paddedEmbedding = [...embedding, ...embedding]
       
+      // Save both original and padded embeddings for debugging
+      const fs = require('fs');
+      const path = require('path');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const sanitizedText = text.substring(0, 20).replace(/[^a-z0-9]/gi, '_');
+      const debugData = {
+        text_sample: text.substring(0, 100),
+        timestamp: timestamp,
+        original_dimensions: embedding.length,
+        padded_dimensions: paddedEmbedding.length,
+        original_embedding: embedding,
+        padded_embedding: paddedEmbedding
+      };
+      
+      try {
+        const filename = path.join(process.cwd(), 'tmp', `raw_embedding_${sanitizedText}_${timestamp}.json`);
+        fs.writeFileSync(filename, JSON.stringify(debugData, null, 2));
+        console.log(`Saved raw embedding details to ${filename}`);
+      } catch (error) {
+        console.error("Error saving raw embedding to tmp:", error);
+      }
+      
       return paddedEmbedding
     }, 3, 2000, 2) // Reduce max retries to 3, increase initial delay to 2 seconds, and keep factor at 2
   } catch (error) {
@@ -212,6 +234,10 @@ export async function upsertEmbeddings(resourceId: string, content: string) {
           console.log(`Processing chunk ${i + index} (${chunk.length} chars): ${chunk.substring(0, 100)}...`)
 
           const embedding = await generateEmbedding(chunk)
+          
+          // Save the chunk embedding to tmp directory for debugging
+          await saveEmbeddingToTmp(`chunk_${resourceId}_${i + index}`, embedding, chunk.substring(0, 100))
+          
           successCount++
           return {
             id: `${resourceId}-${i + index}`,
@@ -267,18 +293,34 @@ export async function upsertEmbeddings(resourceId: string, content: string) {
 }
 
 // Find relevant content based on a query with retry logic
-export async function findRelevantContent(query: string, k = 5) {
+export async function findRelevantContent(query: string, k = 8) {
   try {
     console.log("Finding relevant content for query:", query)
+    
+    // Preprocess query to improve matching for material codes
+    // Handle special cases where the query is likely a material code lookup
+    const isMaterialCodeQuery = /lokasi|dimana|berada|location|where|is|ada/.test(query.toLowerCase()) &&
+                               /[A-Z0-9]{3,}/.test(query);
+    
+    // For material lookups, increase the number of matches
+    const topK = isMaterialCodeQuery ? 12 : k;
+    
+    // Log if this appears to be a material code query
+    if (isMaterialCodeQuery) {
+      console.log("Detected material code lookup query, increasing result count to:", topK);
+    }
     
     // Generate embedding for the query with retry logic
     const queryEmbedding = await generateEmbedding(query)
     console.log("Generated query embedding successfully")
 
+    // Save the query embedding to tmp directory for debugging
+    await saveEmbeddingToTmp(query, queryEmbedding)
+
     // Query Upstash Vector for similar content
     const results = await index.query({
       vector: queryEmbedding,
-      topK: k,
+      topK: topK,
       includeMetadata: true,
     })
 
@@ -295,6 +337,35 @@ export async function findRelevantContent(query: string, k = 5) {
     // Instead of returning an empty array, throw the error
     // This will be handled appropriately in the chat API
     throw new Error(`Failed to retrieve relevant content: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+// Helper function to save embeddings to tmp directory
+async function saveEmbeddingToTmp(query: string, embedding: number[], context: string = "") {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    
+    // Create a sanitized filename from the query
+    const sanitizedQuery = query.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = path.join(process.cwd(), 'tmp', `embedding_${sanitizedQuery}_${timestamp}.json`);
+    
+    // Create the debugging data with metadata
+    const debugData = {
+      query,
+      timestamp: new Date().toISOString(),
+      dimensions: embedding.length,
+      context: context || query,
+      embedding
+    };
+    
+    // Write the embedding data to the file
+    fs.writeFileSync(filename, JSON.stringify(debugData, null, 2));
+    console.log(`Saved embedding to ${filename}`);
+  } catch (error) {
+    console.error("Error saving embedding to tmp directory:", error);
+    // Don't throw - this is just for debugging and shouldn't affect the main functionality
   }
 }
 
