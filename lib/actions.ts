@@ -10,9 +10,14 @@ import {
   setProcessingError,
   getProcessingStatus,
   updateProgress,
+  generateUserId,
+  isProcessLockedByOtherUser
 } from "@/lib/file-processing-status"
 
 export async function processInventoryData(formData: FormData) {
+  // Generate a unique ID for this processing session
+  const userId = generateUserId()
+  
   try {
     // Check if already processing
     const currentStatus = await getProcessingStatus()
@@ -23,15 +28,34 @@ export async function processInventoryData(formData: FormData) {
         isAlreadyProcessing: true,
       }
     }
+    
+    // Check if locked by another user
+    if (await isProcessLockedByOtherUser(userId)) {
+      return {
+        success: false,
+        message: "Another user is currently uploading data. Please try again later.",
+        isAlreadyProcessing: true,
+      }
+    }
 
-    // Start processing
-    await startProcessing()
+    // Start processing with the user ID
+    await startProcessing(userId)
 
     // First, ensure the index is set up with the correct dimensions
     await setupVectorIndex()
     await updateProgress(0, 100, "Setting up vector index...")
 
     const file = formData.get("file") as File
+    const selectedColumnsJson = formData.get("selectedColumns") as string
+    let selectedColumns: string[] = []
+
+    if (selectedColumnsJson) {
+      try {
+        selectedColumns = JSON.parse(selectedColumnsJson)
+      } catch (error) {
+        console.error("Error parsing selected columns:", error)
+      }
+    }
 
     if (!file) {
       await setProcessingError("No file provided")
@@ -69,6 +93,21 @@ export async function processInventoryData(formData: FormData) {
       throw new Error("The file contains no data.")
     }
 
+    // Filter data to include only selected columns if any are specified
+    if (selectedColumns && selectedColumns.length > 0) {
+      await updateProgress(15, 100, `Filtering data to include only selected columns...`)
+      
+      data = data.map(row => {
+        const filteredRow: Record<string, any> = {}
+        selectedColumns.forEach(column => {
+          if (column in row) {
+            filteredRow[column] = row[column]
+          }
+        })
+        return filteredRow
+      })
+    }
+
     // Limit the amount of data to process to avoid rate limits
     const MAX_RECORDS = 500
     if (data.length > MAX_RECORDS) {
@@ -104,7 +143,7 @@ export async function processInventoryData(formData: FormData) {
 
       return {
         success: true,
-        message: `Successfully processed ${result.chunksProcessed} of ${result.totalChunks} chunks from ${data.length} inventory records.`,
+        message: `Successfully processed ${result.chunksProcessed} of ${result.totalChunks} chunks from ${data.length} inventory records with ${selectedColumns.length} selected columns.`,
       }
     } catch (error) {
       // If embedding fails, provide a more helpful error message
@@ -130,6 +169,8 @@ export async function processInventoryData(formData: FormData) {
 }
 
 export async function clearAllData() {
+  const userId = generateUserId()
+  
   try {
     // Check if already processing
     const currentStatus = await getProcessingStatus()
@@ -139,9 +180,17 @@ export async function clearAllData() {
         message: "Another processing task is already running. Please wait for it to complete.",
       }
     }
+    
+    // Check if locked by another user
+    if (await isProcessLockedByOtherUser(userId)) {
+      return {
+        success: false,
+        message: "Another user is currently performing data operations. Please try again later.",
+      }
+    }
 
-    // Start processing
-    await startProcessing()
+    // Start processing with user ID
+    await startProcessing(userId)
     await updateProgress(0, 100, "Clearing all data...")
 
     await clearAllEmbeddings()

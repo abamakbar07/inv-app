@@ -6,11 +6,12 @@ import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Loader2, Upload, Trash2, RefreshCw, AlertTriangle, AlertCircle } from "lucide-react"
+import { Loader2, Upload, Trash2, RefreshCw, AlertTriangle, AlertCircle, FileText } from "lucide-react"
 import { processInventoryData, clearAllData } from "@/lib/actions"
 import { useToast } from "@/hooks/use-toast"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
+import { Checkbox } from "@/components/ui/checkbox"
 import type { ProcessingStatus } from "@/lib/file-processing-status"
 
 export default function UploadForm() {
@@ -20,6 +21,10 @@ export default function UploadForm() {
   const [isResetting, setIsResetting] = useState(false)
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [fileData, setFileData] = useState<any[] | null>(null)
+  const [columns, setColumns] = useState<string[]>([])
+  const [selectedColumns, setSelectedColumns] = useState<string[]>([])
+  const [isPreviewingFile, setIsPreviewingFile] = useState(false)
   const { toast } = useToast()
 
   // Fetch processing status periodically
@@ -112,7 +117,7 @@ export default function UploadForm() {
     }
   }, [toast])
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const selectedFile = e.target.files[0]
 
@@ -127,6 +132,57 @@ export default function UploadForm() {
       }
 
       setFile(selectedFile)
+      
+      // Preview the file and extract columns
+      setIsPreviewingFile(true)
+      
+      try {
+        // Read file content to extract columns
+        const reader = new FileReader()
+        
+        reader.onload = async (event) => {
+          if (!event.target || !event.target.result) return
+          
+          const arrayBuffer = event.target.result as ArrayBuffer
+          
+          // Use already imported XLSX from the server components
+          const formData = new FormData()
+          formData.append('file', selectedFile)
+          formData.append('previewOnly', 'true')
+          
+          const response = await fetch('/api/upload/preview', {
+            method: 'POST',
+            body: formData
+          })
+          
+          if (!response.ok) {
+            throw new Error('Failed to preview file')
+          }
+          
+          const result = await response.json()
+          
+          if (result.success) {
+            setFileData(result.data)
+            const extractedColumns = result.columns || []
+            setColumns(extractedColumns)
+            // By default select all columns
+            setSelectedColumns(extractedColumns)
+          } else {
+            throw new Error(result.message || 'Failed to parse file')
+          }
+        }
+        
+        reader.readAsArrayBuffer(selectedFile)
+      } catch (error) {
+        console.error("File preview error:", error)
+        toast({
+          title: "File preview failed",
+          description: error instanceof Error ? error.message : "Failed to preview file content",
+          variant: "destructive",
+        })
+      } finally {
+        setIsPreviewingFile(false)
+      }
     }
   }
 
@@ -163,11 +219,22 @@ export default function UploadForm() {
       return
     }
 
+    // Check if at least one column is selected
+    if (selectedColumns.length === 0) {
+      toast({
+        title: "No columns selected",
+        description: "Please select at least one column to process.",
+        variant: "destructive",
+      })
+      return
+    }
+
     setIsUploading(true)
 
     try {
       const formData = new FormData()
       formData.append("file", file)
+      formData.append("selectedColumns", JSON.stringify(selectedColumns))
 
       const result = await processInventoryData(formData)
 
@@ -306,6 +373,25 @@ export default function UploadForm() {
     }
   }
 
+  // Toggle column selection
+  const toggleColumnSelection = (column: string) => {
+    setSelectedColumns(prev => 
+      prev.includes(column)
+        ? prev.filter(col => col !== column)
+        : [...prev, column]
+    )
+  }
+  
+  // Select all columns
+  const selectAllColumns = () => {
+    setSelectedColumns([...columns])
+  }
+  
+  // Deselect all columns
+  const deselectAllColumns = () => {
+    setSelectedColumns([])
+  }
+
   // Calculate progress percentage
   const progressPercentage = processingStatus?.progress
     ? Math.round((processingStatus.progress.current / processingStatus.progress.total) * 100)
@@ -359,9 +445,70 @@ export default function UploadForm() {
           />
           <p className="text-sm text-gray-500">Upload your inventory data to analyze and chat with it (max 1MB).</p>
         </div>
+        
+        {isPreviewingFile && (
+          <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-blue-600" />
+              <p className="text-blue-700">Previewing file content...</p>
+            </div>
+          </div>
+        )}
+        
+        {columns.length > 0 && (
+          <div className="border rounded-md p-4">
+            <div className="mb-2 flex justify-between items-center">
+              <Label className="text-sm font-medium">Select Columns to Process</Label>
+              <div className="space-x-2">
+                <Button 
+                  type="button" 
+                  size="sm" 
+                  variant="outline" 
+                  onClick={selectAllColumns}
+                  disabled={processingStatus?.isProcessing || false}
+                >
+                  Select All
+                </Button>
+                <Button 
+                  type="button" 
+                  size="sm" 
+                  variant="outline" 
+                  onClick={deselectAllColumns}
+                  disabled={processingStatus?.isProcessing || false}
+                >
+                  Deselect All
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 mt-2">
+              {columns.map((column) => (
+                <div key={column} className="flex items-center space-x-2">
+                  <Checkbox 
+                    id={`column-${column}`} 
+                    checked={selectedColumns.includes(column)}
+                    onCheckedChange={() => toggleColumnSelection(column)}
+                    disabled={processingStatus?.isProcessing || false}
+                  />
+                  <Label 
+                    htmlFor={`column-${column}`}
+                    className="text-sm cursor-pointer"
+                  >
+                    {column}
+                  </Label>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              Selected {selectedColumns.length} of {columns.length} columns
+            </p>
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-4">
-          <Button type="submit" disabled={!file || processingStatus?.isProcessing || false}>
+          <Button 
+            type="submit" 
+            disabled={!file || selectedColumns.length === 0 || processingStatus?.isProcessing || false}
+          >
             {isUploading ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
