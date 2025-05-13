@@ -141,32 +141,50 @@ export async function POST(req: Request) {
       const text = await result.response.text();
       console.log("Received response from Gemini");
       
-      // Ensure the response text is properly escaped for JSON
-      // Handle any characters that might break JSON
-      const safeText = text
-        .replace(/\\/g, '\\\\')  // Escape backslashes first
-        .replace(/"/g, '\\"')    // Escape quotes
-        .replace(/\n/g, '\\n')   // Escape newlines
-        .replace(/\r/g, '\\r')   // Escape carriage returns
-        .replace(/\t/g, '\\t')   // Escape tabs
-        .replace(/\f/g, '\\f');  // Escape form feeds
+      // Check if we're dealing with a non-English response (likely if query was non-English)
+      const containsNonLatinChars = /[^\x00-\x7F]/.test(text);
       
-      // Construct a valid JSON response manually to ensure it's complete
-      const safeJsonString = `{"text":"${safeText}"}`;
+      // For responses with special characters, especially non-Latin ones,
+      // we need to be extra careful with JSON encoding
+      let safeJsonString;
+      
+      if (containsNonLatinChars) {
+        // For non-English text, use direct JSON.stringify for safer handling
+        safeJsonString = JSON.stringify({ text });
+      } else {
+        // For regular English text, continue with manual escaping approach
+        // Ensure the response text is properly escaped for JSON
+        // Handle any characters that might break JSON
+        const safeText = text
+          .replace(/\\/g, '\\\\')  // Escape backslashes first
+          .replace(/"/g, '\\"')    // Escape quotes
+          .replace(/\n/g, '\\n')   // Escape newlines
+          .replace(/\r/g, '\\r')   // Escape carriage returns
+          .replace(/\t/g, '\\t')   // Escape tabs
+          .replace(/\f/g, '\\f');  // Escape form feeds
+        
+        // Construct a valid JSON response manually to ensure it's complete
+        safeJsonString = `{"text":"${safeText}"}`;
+      }
       
       // Verify that we have valid JSON before sending
       try {
         JSON.parse(safeJsonString);
       } catch (jsonError) {
         console.error("Error with constructed JSON:", jsonError);
-        // Fallback to a simpler, guaranteed valid JSON if there's an issue
+        // Use robust JSON creation for fallback
         return new Response(JSON.stringify({ 
-          text: "I processed your request but encountered a formatting issue. Please try again." 
+          text: containsNonLatinChars 
+            ? "Saya memproses permintaan Anda tetapi mengalami masalah format. Silakan coba lagi."
+            : "I processed your request but encountered a formatting issue. Please try again." 
         }), { 
           status: 200,
           headers: { "Content-Type": "application/json" }
         });
       }
+      
+      // Log the successful response for debugging
+      console.log("Successfully formatted response as valid JSON");
       
       // Return the validated response as properly formatted JSON
       return new Response(safeJsonString, { 

@@ -128,10 +128,31 @@ export default function ChatInterface({
             // If successful, clear the buffer
             setJsonBuffer("")
           } catch (bufferError) {
-            // If still not valid, keep the buffer for the next chunk
-            // and don't throw an error yet
-            console.log("Buffering incomplete JSON chunk, waiting for more data...")
-            return
+            // If still not valid JSON, check if it's a complete text response without JSON structure
+            if (updatedBuffer.trim() && !updatedBuffer.startsWith('{') && !updatedBuffer.includes('{"text":')) {
+              // This might be a direct text response - handle as plain text
+              data = { text: updatedBuffer.trim() }
+              setJsonBuffer("")
+            } else {
+              // Try to recover any valid JSON from the buffer by cleaning it
+              try {
+                // Look for a JSON-like pattern in the buffer
+                const jsonMatch = updatedBuffer.match(/\{.*\}/s);
+                if (jsonMatch && jsonMatch[0]) {
+                  // If we found something that looks like JSON, try to parse it
+                  data = JSON.parse(jsonMatch[0]);
+                  setJsonBuffer("");
+                } else {
+                  // If no valid JSON pattern, keep buffering
+                  console.log("Buffering incomplete JSON chunk, waiting for more data...");
+                  return;
+                }
+              } catch (recoveryError) {
+                // If all recovery attempts fail, keep the buffer for the next chunk
+                console.log("Buffering incomplete JSON chunk, waiting for more data...");
+                return;
+              }
+            }
           }
         }
         
@@ -238,16 +259,69 @@ export default function ChatInterface({
     ) {
       console.log("Parsing error detected - adding as model error")
       
-      // Reset the buffer when we get a parsing error
-      setJsonBuffer("")
-      
       // Get the last user message, prioritizing the lastQuery state which is more reliable
       const queryText = lastQuery || 
                         (currentMessages.findLast(m => m.role === 'user')?.content || "your query")
       
-      // Simple language detection - check if it contains non-Latin characters or common non-English words
+      // Improved language detection - more robust patterns for Indonesian and other languages
       const isNonEnglish = /[^\x00-\x7F]/.test(queryText) || 
-                           /berapa|jenis|ada|pada/.test(queryText)
+                           /berapa|jenis|ada|pada|dimana|lokasi|beritahu|aku|beserta/.test(queryText.toLowerCase())
+      
+      // First, try to recover from the buffer if possible
+      if (jsonBuffer && jsonBuffer.length > 5) {
+        try {
+          // Try several approaches to extract valid JSON
+          let extractedJson = null;
+          
+          // Try to find complete JSON objects
+          const jsonMatch = jsonBuffer.match(/\{.*\}/s);
+          if (jsonMatch && jsonMatch[0]) {
+            try {
+              extractedJson = JSON.parse(jsonMatch[0]);
+            } catch (e) {
+              // Try to clean the JSON and parse again
+              const cleanedJson = jsonMatch[0]
+                .replace(/\\(?!["\\/bfnrt])/g, '\\\\') // Fix escaped backslashes
+                .replace(/([^\\])"/g, '$1\\"')         // Fix unescaped quotes
+                .replace(/^([^{]*)({.*})(.*$)/s, '$2');  // Extract just the JSON part
+              
+              try {
+                extractedJson = JSON.parse(cleanedJson);
+              } catch (e2) {
+                // Last resort: manual extraction
+                const textMatch = jsonBuffer.match(/"text"\s*:\s*"([^"]*)"/);
+                if (textMatch && textMatch[1]) {
+                  extractedJson = { text: textMatch[1] };
+                }
+              }
+            }
+          }
+          
+          // If we successfully extracted some valid data
+          if (extractedJson && extractedJson.text) {
+            // Clear the buffer
+            setJsonBuffer("");
+            
+            // Add the recovered message
+            addEnhancedMessage({
+              id: `recovered-${Date.now()}`,
+              role: 'assistant',
+              content: extractedJson.text,
+              source: 'ai'
+            });
+            
+            // Log the recovery
+            console.log("Successfully recovered response from buffer");
+            return;
+          }
+        } catch (e) {
+          console.log("Failed to recover response from buffer:", e);
+          // Continue with fallback response
+        }
+      }
+      
+      // Clear the buffer since we're now handling this as an error
+      setJsonBuffer("");
       
       let fallbackContent = ""
       if (isNonEnglish) {
@@ -264,13 +338,15 @@ export default function ChatInterface({
         source: 'model-error'
       })
       
-      // Also add a specific error message for debugging
-      addEnhancedMessage({
-        id: `system-error-${Date.now()}`,
-        role: 'assistant',
-        content: `Failed to parse stream response. Error: ${error.message}`,
-        source: 'system-error'
-      })
+      // Also add a specific error message for debugging if in development
+      if (process.env.NODE_ENV === 'development') {
+        addEnhancedMessage({
+          id: `system-error-${Date.now()}`,
+          role: 'assistant',
+          content: `Failed to parse stream response. Error: ${error.message}`,
+          source: 'system-error'
+        })
+      }
       
       // Show a more helpful toast message
       toast({
@@ -294,7 +370,7 @@ export default function ChatInterface({
         variant: "destructive",
       })
     }
-  }, [lastQuery, toast])
+  }, [lastQuery, toast, jsonBuffer, addEnhancedMessage])
 
   // The legacy handleError function that calls the new one
   const handleError = useCallback((error: Error) => {
