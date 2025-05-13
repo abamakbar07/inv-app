@@ -20,6 +20,13 @@ interface ChatMessage {
   content: string;
 }
 
+// Error response interface
+interface ErrorResponse {
+  error: string;
+  errorType?: "system" | "model" | "data";
+  errorDetails?: string;
+}
+
 export async function POST(req: Request) {
   try {
     const { messages }: { messages: ChatMessage[] } = await req.json()
@@ -28,10 +35,14 @@ export async function POST(req: Request) {
     const dataExists = await checkDataExists()
 
     if (!dataExists) {
+      const errorResponse: ErrorResponse = {
+        error: "No data available. Please upload inventory data first.",
+        errorType: "data",
+        errorDetails: "The vector database has no inventory records to query."
+      }
+      
       return new Response(
-        JSON.stringify({
-          error: "No data available. Please upload inventory data first.",
-        }),
+        JSON.stringify(errorResponse),
         { status: 400, headers: { "Content-Type": "application/json" } }
       )
     }
@@ -53,10 +64,14 @@ export async function POST(req: Request) {
     } catch (error) {
       console.error("Error retrieving context:", error)
       // Instead of continuing with empty context, we'll return an error response
+      const errorResponse: ErrorResponse = {
+        error: `Error retrieving context: ${error instanceof Error ? error.message : "Unknown error"}. Please try again.`,
+        errorType: "system",
+        errorDetails: "Failed to search vector database for relevant inventory data."
+      }
+      
       return new Response(
-        JSON.stringify({
-          error: `Error retrieving context: ${error instanceof Error ? error.message : "Unknown error"}. Please try again.`,
-        }),
+        JSON.stringify(errorResponse),
         { status: 500, headers: { "Content-Type": "application/json" } }
       )
     }
@@ -88,6 +103,19 @@ export async function POST(req: Request) {
     try {
       // Initialize the Gemini API
       const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || "")
+      
+      if (!process.env.GOOGLE_API_KEY) {
+        const errorResponse: ErrorResponse = {
+          error: "Google API Key is not configured. Please check server environment.",
+          errorType: "system",
+          errorDetails: "Missing API credentials for the AI model service."
+        }
+        
+        return new Response(
+          JSON.stringify(errorResponse),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        )
+      }
       
       // Use the model with free tier quota instead of the preview version
       const model = genAI.getGenerativeModel({
@@ -127,19 +155,55 @@ export async function POST(req: Request) {
       
     } catch (error) {
       console.error("Error generating response:", error)
+      
+      // Determine if this is a model error or a system error
+      let errorType: "system" | "model" = "system";
+      let errorDetails = "Unknown system error occurred while processing request";
+      
+      // Check for common model errors
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      
+      if (
+        errorMessage.includes("rate limit") || 
+        errorMessage.includes("quota") || 
+        errorMessage.includes("limit exceeded")
+      ) {
+        errorType = "model";
+        errorDetails = "The AI model service has reached its rate limit. Please try again later.";
+      } else if (
+        errorMessage.includes("blocked") || 
+        errorMessage.includes("harmful") || 
+        errorMessage.includes("safety")
+      ) {
+        errorType = "model";
+        errorDetails = "The AI model rejected this query due to content safety policies.";
+      } else if (errorMessage.includes("token") || errorMessage.includes("too long")) {
+        errorType = "model";
+        errorDetails = "The query or context exceeded the token limit for the AI model.";
+      }
+      
+      const errorResponse: ErrorResponse = {
+        error: `Error generating response: ${errorMessage}`,
+        errorType,
+        errorDetails
+      }
+      
       return new Response(
-        JSON.stringify({
-          error: `Error generating response: ${error instanceof Error ? error.message : "Unknown error"}`,
-        }),
+        JSON.stringify(errorResponse),
         { status: 500, headers: { "Content-Type": "application/json" } }
       )
     }
   } catch (error) {
     console.error("Error in chat API:", error)
+    
+    const errorResponse: ErrorResponse = {
+      error: `An error occurred while processing your request: ${error instanceof Error ? error.message : "Unknown error"}. Please try again later.`,
+      errorType: "system",
+      errorDetails: "The server encountered an unexpected error when processing the request."
+    }
+    
     return new Response(
-      JSON.stringify({
-        error: `An error occurred while processing your request: ${error instanceof Error ? error.message : "Unknown error"}. Please try again later.`,
-      }),
+      JSON.stringify(errorResponse),
       { status: 500, headers: { "Content-Type": "application/json" } }
     )
   }

@@ -6,12 +6,20 @@ import { useState, useRef, useEffect, useCallback } from "react"
 import { useChat, type Message } from "ai/react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Loader2, Send, AlertCircle, RefreshCw, Trash2 } from "lucide-react"
+import { Loader2, Send, AlertCircle, RefreshCw, Trash2, AlertTriangle, Bot } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import type { ProcessingStatus } from "@/lib/file-processing-status"
+
+// Define types for different message sources
+type MessageSource = 'ai' | 'system-error' | 'model-error' | 'user';
+
+// Enhanced message type with source information
+interface EnhancedMessage extends Message {
+  source: MessageSource;
+}
 
 export default function ChatInterface({ 
   dataExists = false,
@@ -28,6 +36,7 @@ export default function ChatInterface({
   const [isCustomHandling, setIsCustomHandling] = useState(false)
   const [fallbackMessages, setFallbackMessages] = useState<Message[]>([])
   const [lastQuery, setLastQuery] = useState("")
+  const [enhancedMessages, setEnhancedMessages] = useState<EnhancedMessage[]>([])
 
   // Fetch processing status periodically
   useEffect(() => {
@@ -138,12 +147,147 @@ export default function ChatInterface({
           // Let the default handler try to handle it
         }
       } else {
-        // Handle non-200 responses
-        setLocalError(new Error(`Server returned status ${response.status}`))
+        try {
+          // Try to parse the error response as JSON
+          const errorData = await response.clone().json();
+          
+          // Check if this is our enhanced error format
+          if (errorData && errorData.error) {
+            let errorMessage = errorData.error;
+            const errorType = errorData.errorType || "system";
+            
+            setLocalError(new Error(errorMessage));
+            
+            // Add appropriate error message based on type
+            if (errorType === "model") {
+              // AI model error
+              addEnhancedMessage({
+                id: `model-error-${Date.now()}`,
+                role: 'assistant',
+                content: errorMessage,
+                source: 'model-error'
+              });
+              
+              // Also add a system error with details if available
+              if (errorData.errorDetails) {
+                addEnhancedMessage({
+                  id: `system-error-${Date.now()}`,
+                  role: 'assistant',
+                  content: errorData.errorDetails,
+                  source: 'system-error'
+                });
+              }
+            } else if (errorType === "data") {
+              // Data-related error (like missing inventory data)
+              addEnhancedMessage({
+                id: `system-error-${Date.now()}`,
+                role: 'assistant',
+                content: errorMessage,
+                source: 'system-error'
+              });
+            } else {
+              // System error (default)
+              addEnhancedMessage({
+                id: `system-error-${Date.now()}`,
+                role: 'assistant',
+                content: errorMessage,
+                source: 'system-error'
+              });
+              
+              // Add details if available
+              if (errorData.errorDetails) {
+                const detailsId = `error-details-${Date.now()}`;
+                addEnhancedMessage({
+                  id: detailsId,
+                  role: 'assistant',
+                  content: errorData.errorDetails,
+                  source: 'system-error'
+                });
+              }
+            }
+          } else {
+            // Fallback for non-JSON error responses
+            const errorMessageContent = response.status === 400 
+              ? "No data available. Please upload inventory data first."
+              : `Server error (${response.status}). Please try again later.`;
+            
+            setLocalError(new Error(`Server returned status ${response.status}: ${response.statusText}`));
+            
+            addEnhancedMessage({
+              id: `error-${Date.now()}`,
+              role: 'assistant',
+              content: errorMessageContent,
+              source: 'system-error'
+            });
+          }
+        } catch (e) {
+          // If we can't parse the JSON, just show a generic error
+          console.error("Error parsing error response:", e);
+          
+          const errorMessageContent = `Server error (${response.status}). Please try again later.`;
+          setLocalError(new Error(`Server returned status ${response.status}: ${response.statusText}`));
+          
+          addEnhancedMessage({
+            id: `error-${Date.now()}`,
+            role: 'assistant',
+            content: errorMessageContent,
+            source: 'system-error'
+          });
+        }
       }
     },
     body: {},
   })
+  
+  // Initialize enhancedMessages with the initial welcome message
+  useEffect(() => {
+    if (messages.length === 1 && messages[0].id === "welcome") {
+      setEnhancedMessages([{
+        ...messages[0],
+        source: 'ai'
+      }]);
+    }
+  }, []);
+
+  // Update enhancedMessages whenever messages change
+  useEffect(() => {
+    // Convert standard messages to enhanced messages
+    // Skip if we're doing custom handling
+    if (isCustomHandling) return;
+    
+    setEnhancedMessages(prevEnhanced => {
+      // Map existing messages to enhanced messages
+      // But preserve any existing source information
+      const newEnhanced = messages.map(msg => {
+        // Find if this message already exists in our enhanced collection
+        const existingEnhanced = prevEnhanced.find(e => e.id === msg.id);
+        
+        if (existingEnhanced) {
+          // Keep the existing source if already set
+          return existingEnhanced;
+        } else {
+          // For new messages, assign a source based on role
+          return {
+            ...msg,
+            source: msg.role === 'user' ? 'user' : 'ai' as MessageSource
+          } as EnhancedMessage;
+        }
+      });
+      
+      return newEnhanced;
+    });
+  }, [messages, isCustomHandling]);
+
+  // Helper to add an enhanced message
+  const addEnhancedMessage = (message: EnhancedMessage) => {
+    setEnhancedMessages(prev => {
+      // Check if this message already exists
+      if (prev.some(m => m.id === message.id)) {
+        return prev;
+      }
+      return [...prev, message];
+    });
+  };
 
   // Then define the error handler function that uses the context
   const handleErrorWithContext = useCallback((error: Error, currentMessages: Message[], setCurrentMessages: (messages: Message[]) => void) => {
@@ -156,7 +300,7 @@ export default function ChatInterface({
       error.message.includes("Invalid code") ||
       error.message.includes("JSON")
     ) {
-      console.log("Parsing error detected - trying fallback response")
+      console.log("Parsing error detected - adding as model error")
       
       // Get the last user message, prioritizing the lastQuery state which is more reliable
       const queryText = lastQuery || 
@@ -173,33 +317,37 @@ export default function ChatInterface({
         fallbackContent = `I found your query about "${queryText}" but encountered a formatting issue. Please try rephrasing your question.`;
       }
       
-      // Create fallback response
-      const fallbackResponse: Message = {
-        id: `fallback-${Date.now()}`,
+      // Add as a model error message
+      addEnhancedMessage({
+        id: `model-error-${Date.now()}`,
         role: 'assistant',
-        content: fallbackContent
-      }
+        content: fallbackContent,
+        source: 'model-error'
+      });
       
-      // Check if the last message already has our fallback
-      const existingMessages = [...currentMessages];
-      const lastMsg = existingMessages.length > 0 ? existingMessages[existingMessages.length - 1] : null;
-      
-      // Only add if we don't already have a similar fallback
-      if (!lastMsg || lastMsg.role !== 'assistant' || !lastMsg.content.includes(queryText)) {
-        // Add the fallback response to the messages
-        setCurrentMessages([...currentMessages, fallbackResponse]);
-      }
-      
-      // Clear the local error - we've handled it with a fallback
-      setLocalError(null);
+      // Also add a specific error message
+      addEnhancedMessage({
+        id: `system-error-${Date.now()}`,
+        role: 'assistant',
+        content: `Failed to parse stream string. Invalid code {"text".`,
+        source: 'system-error'
+      });
       
       // Show a more helpful toast message
       toast({
         title: "Response Format Error",
-        description: "There was an issue with the response format. Using fallback response.",
+        description: "There was an issue with the response format from the AI model.",
         variant: "destructive",
       })
     } else {
+      // For other errors, show a system error message
+      addEnhancedMessage({
+        id: `system-error-${Date.now()}`,
+        role: 'assistant',
+        content: error.message || "An unknown error occurred while processing your request.",
+        source: 'system-error'
+      });
+      
       // For other errors, show the original error
       toast({
         title: "Chat Error",
@@ -217,7 +365,7 @@ export default function ChatInterface({
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages])
+  }, [enhancedMessages])
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -274,6 +422,17 @@ export default function ChatInterface({
 
   const handleRetry = () => {
     setLocalError(null)
+    // Remove the last system error message
+    setEnhancedMessages(prev => {
+      const lastErrorIndex = [...prev].reverse().findIndex(m => m.source === 'system-error');
+      if (lastErrorIndex >= 0) {
+        const newMessages = [...prev];
+        newMessages.splice(prev.length - 1 - lastErrorIndex, 1);
+        return newMessages;
+      }
+      return prev;
+    });
+    
     if (reload) {
       try {
         reload()
@@ -290,14 +449,14 @@ export default function ChatInterface({
     
     if (lastUserMessage) {
       // Add a more helpful fallback response with context
-      const fallbackResponse: Message = {
-        id: `fallback-${Date.now()}`,
+      addEnhancedMessage({
+        id: `model-error-${Date.now()}`,
         role: 'assistant',
-        content: `I found your query about "${lastUserMessage.content}" in our database, but had trouble formatting the response. Please try rephrasing your question or check your inventory data.`
-      }
+        content: `I found your query about "${lastUserMessage.content}" in our database, but had trouble formatting the response. Please try rephrasing your question or check your inventory data.`,
+        source: 'model-error'
+      });
       
-      // Set the message and clear the error
-      setMessages([...messages, fallbackResponse])
+      // Clear the error
       setLocalError(null)
       
       // Also log this event to help with debugging
@@ -324,6 +483,15 @@ export default function ChatInterface({
           "Hello! I'm your Inventory Analyst assistant. Ask me anything about your inventory data, and I'll help you analyze it.",
       },
     ]);
+    
+    // Reset enhanced messages
+    setEnhancedMessages([{
+      id: "welcome",
+      role: "assistant",
+      content: "Hello! I'm your Inventory Analyst assistant. Ask me anything about your inventory data, and I'll help you analyze it.",
+      source: 'ai'
+    }]);
+    
     // Clear any errors
     setLocalError(null);
     
@@ -351,6 +519,23 @@ export default function ChatInterface({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleClearChat]);
+
+  // Helper to dismiss the last error
+  const dismissLastError = () => {
+    // Remove the last system error message
+    setEnhancedMessages(prev => {
+      const lastErrorIndex = [...prev].reverse().findIndex(m => m.source === 'system-error');
+      if (lastErrorIndex >= 0) {
+        const newMessages = [...prev];
+        newMessages.splice(prev.length - 1 - lastErrorIndex, 1);
+        return newMessages;
+      }
+      return prev;
+    });
+    
+    // Also clear the local error state
+    setLocalError(null);
+  };
 
   const showError = Boolean(error || localError);
 
@@ -382,6 +567,97 @@ export default function ChatInterface({
     )
   }
 
+  // Function to render a message based on its source
+  const renderMessage = (message: EnhancedMessage) => {
+    // Base styling for different message types
+    const getMessageStyles = () => {
+      switch (message.source) {
+        case 'user':
+          return "bg-primary text-primary-foreground";
+        case 'ai':
+          return "bg-muted";
+        case 'model-error':
+          return "bg-amber-50 border border-amber-200 text-amber-800";
+        case 'system-error':
+          return "bg-red-50 border border-red-200 text-red-800";
+        default:
+          return "bg-muted";
+      }
+    };
+    
+    // Get appropriate avatar for different message sources
+    const getAvatar = () => {
+      switch (message.source) {
+        case 'ai':
+          return (
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="bg-primary text-primary-foreground">AI</AvatarFallback>
+            </Avatar>
+          );
+        case 'model-error':
+          return (
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="bg-amber-200 text-amber-800">
+                <Bot className="h-4 w-4" />
+              </AvatarFallback>
+            </Avatar>
+          );
+        case 'system-error':
+          return (
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="bg-red-200 text-red-800">
+                <AlertTriangle className="h-4 w-4" />
+              </AvatarFallback>
+            </Avatar>
+          );
+        case 'user':
+          return (
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="bg-gray-200">U</AvatarFallback>
+            </Avatar>
+          );
+        default:
+          return null;
+      }
+    };
+    
+    // Message container with appropriate styling
+    return (
+      <div
+        key={message.id}
+        className={cn(
+          "flex items-start gap-3 max-w-[80%]", 
+          message.source === "user" ? "ml-auto" : "",
+          message.source === "system-error" ? "w-full max-w-full" : ""
+        )}
+      >
+        {message.source !== "user" && getAvatar()}
+        <div
+          className={cn(
+            "rounded-lg px-4 py-2 text-sm",
+            getMessageStyles()
+          )}
+        >
+          {message.content}
+          
+          {/* Add retry/dismiss buttons for system errors */}
+          {message.source === 'system-error' && (
+            <div className="flex gap-2 mt-2">
+              <Button size="sm" variant="outline" onClick={handleRetry} className="bg-white">
+                <RefreshCw className="h-3 w-3 mr-1" />
+                Retry
+              </Button>
+              <Button size="sm" variant="outline" onClick={dismissLastError} className="bg-white">
+                Dismiss
+              </Button>
+            </div>
+          )}
+        </div>
+        {message.source === "user" && getAvatar()}
+      </div>
+    );
+  };
+
   return (
     <div className="flex flex-col h-[600px]">
       <div className="flex justify-between items-center border-b p-2">
@@ -398,31 +674,7 @@ export default function ChatInterface({
         </Button>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={cn("flex items-start gap-3 max-w-[80%]", message.role === "user" ? "ml-auto" : "")}
-          >
-            {message.role !== "user" && (
-              <Avatar className="h-8 w-8">
-                <AvatarFallback className="bg-primary text-primary-foreground">AI</AvatarFallback>
-              </Avatar>
-            )}
-            <div
-              className={cn(
-                "rounded-lg px-4 py-2 text-sm",
-                message.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted",
-              )}
-            >
-              {message.content}
-            </div>
-            {message.role === "user" && (
-              <Avatar className="h-8 w-8">
-                <AvatarFallback className="bg-gray-200">U</AvatarFallback>
-              </Avatar>
-            )}
-          </div>
-        ))}
+        {enhancedMessages.map(renderMessage)}
 
         {isLoading && !processingStatus?.isProcessing && (
           <div className="flex items-center gap-2 text-muted-foreground">
@@ -436,25 +688,6 @@ export default function ChatInterface({
             <Loader2 className="h-4 w-4 animate-spin" />
             <p className="text-sm">{processingStatus.progress?.message || "Processing file..."}</p>
           </div>
-        )}
-
-        {showError && (
-          <Alert variant="destructive" className="mt-4">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Error</AlertTitle>
-            <AlertDescription className="flex flex-col gap-2">
-              <span>{(error || localError)?.message || "An error occurred while processing your request."}</span>
-              <div className="flex gap-2 mt-2">
-                <Button size="sm" variant="outline" onClick={handleRetry} className="self-start">
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Retry
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => setLocalError(null)} className="self-start">
-                  Dismiss
-                </Button>
-              </div>
-            </AlertDescription>
-          </Alert>
         )}
 
         <div ref={messagesEndRef} />
