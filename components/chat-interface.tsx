@@ -12,6 +12,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import type { ProcessingStatus } from "@/lib/file-processing-status"
+import ReactMarkdown from 'react-markdown'
 
 // Define types for different message sources
 type MessageSource = 'ai' | 'system-error' | 'model-error' | 'user' | 'no-data-found';
@@ -97,7 +98,7 @@ export default function ChatInterface({
         id: "welcome",
         role: "assistant",
         content:
-          "Hello! I'm your Inventory Analyst assistant. Ask me questions like:\n\n• Where is material [code] located?\n• What quantities of [material] do we have?\n• What's in location [warehouse]?\n\nI can respond in English or Indonesian.",
+          "# Welcome to InventBot! 👋\n\nI'm your intelligent Inventory Analyst assistant. Ask me questions about your inventory in **English** or **Indonesian**.\n\n## Example questions:\n\n- Where is material `KRC161282/2` located?\n- What quantities of `ABC123` do we have?\n- Show inventory in warehouse `IDMRD51`\n- Berapa jumlah material `XYZ789`?\n- Lokasi dan qty material `KRC161282/2`\n\nI'll provide formatted responses with tables and lists for better readability.",
       },
     ],
     onError: (error) => handleErrorWithContext(error, messages, setMessages),
@@ -520,7 +521,7 @@ export default function ChatInterface({
         id: "welcome",
         role: "assistant",
         content:
-          "Hello! I'm your Inventory Analyst assistant. Ask me anything about your inventory data, and I'll help you analyze it.",
+          "# Welcome to InventBot! 👋\n\nI'm your intelligent Inventory Analyst assistant. Ask me questions about your inventory in **English** or **Indonesian**.\n\n## Example questions:\n\n- Where is material `KRC161282/2` located?\n- What quantities of `ABC123` do we have?\n- Show inventory in warehouse `IDMRD51`\n- Berapa jumlah material `XYZ789`?\n- Lokasi dan qty material `KRC161282/2`\n\nI'll provide formatted responses with tables and lists for better readability.",
       },
     ]);
     
@@ -528,7 +529,7 @@ export default function ChatInterface({
     setEnhancedMessages([{
       id: "welcome",
       role: "assistant",
-      content: "Hello! I'm your Inventory Analyst assistant. Ask me anything about your inventory data, and I'll help you analyze it.",
+      content: "# Welcome to InventBot! 👋\n\nI'm your intelligent Inventory Analyst assistant. Ask me questions about your inventory in **English** or **Indonesian**.\n\n## Example questions:\n\n- Where is material `KRC161282/2` located?\n- What quantities of `ABC123` do we have?\n- Show inventory in warehouse `IDMRD51`\n- Berapa jumlah material `XYZ789`?\n- Lokasi dan qty material `KRC161282/2`\n\nI'll provide formatted responses with tables and lists for better readability.",
       source: 'ai'
     }]);
     
@@ -611,20 +612,57 @@ export default function ChatInterface({
   const renderMessage = (message: EnhancedMessage) => {
     // Base styling for different message types
     const getMessageStyles = () => {
-      switch (message.source) {
-        case 'user':
-          return "bg-primary text-primary-foreground";
-        case 'ai':
-          return "bg-muted";
-        case 'model-error':
-          return "bg-amber-50 border border-amber-200 text-amber-800";
-        case 'system-error':
-          return "bg-red-50 border border-red-200 text-red-800";
-        case 'no-data-found':
-          return "bg-orange-50 border border-orange-200 text-orange-800";  
-        default:
-          return "bg-muted";
+      // Base styles
+      const baseStyles = "px-4 py-3 rounded-lg mb-3 max-w-[85%] border-2 whitespace-pre-wrap"
+      
+      // User message styles - make more flat and high contrast
+      if (message.role === "user") {
+        return cn(
+          baseStyles,
+          "ml-auto bg-primary text-primary-foreground border-primary",
+          "shadow-sm"
+        )
       }
+      
+      // AI message styles based on source
+      if (message.source === "ai") {
+        return cn(
+          baseStyles,
+          "mr-auto bg-white text-black border-slate-300",
+          "shadow-sm"
+        )
+      }
+      
+      if (message.source === "system-error") {
+        return cn(
+          baseStyles,
+          "mr-auto bg-destructive/10 text-destructive border-destructive",
+          "shadow-sm"
+        )
+      }
+      
+      if (message.source === "model-error") {
+        return cn(
+          baseStyles,
+          "mr-auto bg-amber-50 text-amber-900 border-amber-500",
+          "shadow-sm"
+        )
+      }
+      
+      if (message.source === "no-data-found") {
+        return cn(
+          baseStyles,
+          "mr-auto bg-slate-50 text-slate-700 border-slate-300",
+          "shadow-sm"
+        )
+      }
+      
+      // Default assistant styles
+      return cn(
+        baseStyles,
+        "mr-auto bg-white text-black border-slate-300",
+        "shadow-sm"
+      )
     };
     
     // Get appropriate avatar for different message sources
@@ -671,24 +709,41 @@ export default function ChatInterface({
       }
     };
     
-    // Message container with appropriate styling
+    // Format message content if it's from the AI
+    const formatMessageContent = () => {
+      if (message.role === "assistant") {
+        return (
+          <ReactMarkdown components={{
+            p: ({ children }) => <p className="my-1.5">{children}</p>,
+            h1: ({ children }) => <h1 className="text-xl font-bold my-2">{children}</h1>,
+            h2: ({ children }) => <h2 className="text-lg font-bold my-2">{children}</h2>,
+            ul: ({ children }) => <ul className="my-1 pl-6 list-disc">{children}</ul>,
+            li: ({ children }) => <li className="my-0.5">{children}</li>,
+            table: ({ children }) => <table className="table-auto border-collapse my-2">{children}</table>,
+            th: ({ children }) => <th className="border border-slate-300 px-2 py-1 bg-slate-100">{children}</th>,
+            td: ({ children }) => <td className="border border-slate-300 px-2 py-1">{children}</td>,
+            code: ({ children }) => <code className="bg-slate-100 px-1 py-0.5 rounded text-sm">{children}</code>
+          }}>
+            {message.content}
+          </ReactMarkdown>
+        )
+      }
+      return message.content
+    }
+
     return (
       <div
-        key={message.id}
+        id={`message-${message.id}`}
         className={cn(
-          "flex items-start gap-3 max-w-[80%]", 
-          message.source === "user" ? "ml-auto" : "",
-          message.source === "system-error" ? "w-full max-w-full" : ""
+          "flex items-start gap-2 mx-0",
+          message.role === "user" ? "justify-end" : "justify-start"
         )}
       >
         {message.source !== "user" && getAvatar()}
         <div
-          className={cn(
-            "rounded-lg px-4 py-2 text-sm",
-            getMessageStyles()
-          )}
+          className={getMessageStyles()}
         >
-          {message.content}
+          {formatMessageContent()}
           
           {/* Add retry/dismiss buttons for system errors */}
           {message.source === 'system-error' && (
@@ -703,7 +758,7 @@ export default function ChatInterface({
             </div>
           )}
         </div>
-        {message.source === "user" && getAvatar()}
+        {message.role === "user" && getAvatar()}
       </div>
     );
   };
