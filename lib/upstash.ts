@@ -214,7 +214,7 @@ export async function upsertEmbeddings(resourceId: string, content: string) {
     await updateProgress(0, chunks.length, `Preparing to process ${chunks.length} chunks...`)
 
     // Process chunks in smaller batches with longer delays between batches
-    const batchSize = 3 // Reduced batch size
+    const batchSize = 5 // Increased batch size
     let successCount = 0
 
     for (let i = 0; i < chunks.length; i += batchSize) {
@@ -293,17 +293,17 @@ export async function upsertEmbeddings(resourceId: string, content: string) {
 }
 
 // Find relevant content based on a query with retry logic
-export async function findRelevantContent(query: string, k = 8) {
+export async function findRelevantContent(query: string, k = 20) {
   try {
     console.log("Finding relevant content for query:", query)
     
     // Preprocess query to improve matching for material codes
     // Handle special cases where the query is likely a material code lookup
-    const isMaterialCodeQuery = /lokasi|dimana|berada|location|where|is|ada/.test(query.toLowerCase()) &&
+    const isMaterialCodeQuery = /lokasi|dimana|berada|location|where|is|ada|qty|quantity|how many|much/.test(query.toLowerCase()) &&
                                /[A-Z0-9]{3,}/.test(query);
     
     // For material lookups, increase the number of matches
-    const topK = isMaterialCodeQuery ? 12 : k;
+    const topK = isMaterialCodeQuery ? 50 : k;
     
     // Log if this appears to be a material code query
     if (isMaterialCodeQuery) {
@@ -380,7 +380,7 @@ export async function checkDataExists(): Promise<boolean> {
     // Try to get multiple vectors to ensure we have a valid result
     const results = await index.query({
       vector: zeroVector,
-      topK: 10,  // Increased from 1 to get a better sample
+      topK: 100,  // Increased from 10 to get a better sample
     })
 
     console.log(`Database check: Found ${results.length} vectors in the database`)
@@ -403,26 +403,56 @@ export async function checkDataExists(): Promise<boolean> {
 // Clear all embeddings from Upstash Vector
 export async function clearAllEmbeddings() {
   try {
+    console.log("Starting to clear all embeddings from database...")
     // Create a zero vector with the correct dimension
     const zeroVector = Array(VECTOR_DIMENSIONS).fill(0)
     
-    // Get all vector IDs
-    const allVectors = await index.query({
-      vector: zeroVector,
-      topK: 1000, // Get a large number of vectors
-    })
-
-    if (allVectors.length === 0) {
-      return { success: true, message: "No data to clear." }
+    // Upstash has a limit of 1000 items per query
+    // We'll implement an iterative approach to delete all vectors
+    const queryLimit = 1000;
+    let deletedCount = 0;
+    let hasMoreVectors = true;
+    
+    while (hasMoreVectors) {
+      // Get batch of vectors (up to 1000)
+      const vectors = await index.query({
+        vector: zeroVector,
+        topK: queryLimit,
+      });
+      
+      console.log(`Found ${vectors.length} vectors to delete in this batch`);
+      
+      if (vectors.length === 0) {
+        hasMoreVectors = false;
+        break;
+      }
+      
+      // Convert IDs to strings
+      const ids = vectors.map((vector) => String(vector.id));
+      
+      // Delete in smaller batches to avoid overwhelming the API
+      const batchSize = 100;
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batchIds = ids.slice(i, i + batchSize);
+        await index.delete(batchIds);
+        deletedCount += batchIds.length;
+        console.log(`Deleted batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(ids.length/batchSize)} (${batchIds.length} vectors)`);
+      }
+      
+      // If we got fewer than the query limit, we're done
+      if (vectors.length < queryLimit) {
+        hasMoreVectors = false;
+      } else {
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
-
-    // Convert IDs to strings to ensure type compatibility
-    const ids = allVectors.map((vector) => String(vector.id))
-    await index.delete(ids)
 
     return {
       success: true,
-      message: `Cleared ${ids.length} vectors from the database.`,
+      message: deletedCount === 0 
+        ? "No data to clear." 
+        : `Cleared ${deletedCount} vectors from the database.`,
     }
   } catch (error) {
     console.error("Error clearing embeddings:", error)

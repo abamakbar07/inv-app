@@ -109,7 +109,7 @@ export async function processInventoryData(formData: FormData) {
     }
 
     // Limit the amount of data to process to avoid rate limits
-    const MAX_RECORDS = 500
+    const MAX_RECORDS = 50000
     if (data.length > MAX_RECORDS) {
       console.log(`Limiting data to ${MAX_RECORDS} records to avoid rate limits`)
       data = data.slice(0, MAX_RECORDS)
