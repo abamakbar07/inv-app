@@ -121,11 +121,11 @@ export default function UploadForm() {
     if (e.target.files && e.target.files.length > 0) {
       const selectedFile = e.target.files[0]
 
-      // Check file size - limit to 1MB to avoid rate limit issues
-      if (selectedFile.size > 1024 * 1024) {
+      // Check file size - limit to 5MB to avoid rate limit issues
+      if (selectedFile.size > 5 * 1024 * 1024) {
         toast({
           title: "File too large",
-          description: "Please select a file smaller than 1MB to avoid rate limit issues.",
+          description: "Please select a file smaller than 5MB to avoid rate limit issues.",
           variant: "destructive",
         })
         return
@@ -403,7 +403,7 @@ export default function UploadForm() {
         <AlertTriangle className="h-4 w-4 text-yellow-600" />
         <AlertTitle className="text-yellow-800">Rate Limit Warning</AlertTitle>
         <AlertDescription className="text-yellow-700">
-          Due to API rate limits, please upload small files (under 1MB) and avoid frequent uploads. If you encounter
+          Due to API rate limits, please upload small files (under 5MB) and avoid frequent uploads. If you encounter
           rate limit errors, wait a few minutes before trying again.
         </AlertDescription>
       </Alert>
@@ -443,7 +443,7 @@ export default function UploadForm() {
             onChange={handleFileChange}
             disabled={processingStatus?.isProcessing || false}
           />
-          <p className="text-sm text-gray-500">Upload your inventory data to analyze and chat with it (max 1MB).</p>
+          <p className="text-sm text-gray-500">Upload your inventory data to analyze and chat with it (max 5MB).</p>
         </div>
         
         {isPreviewingFile && (
