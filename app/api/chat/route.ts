@@ -141,11 +141,34 @@ export async function POST(req: Request) {
       const text = await result.response.text();
       console.log("Received response from Gemini");
       
-      // Use a safe JSON.stringify approach to ensure valid JSON
-      const responseObj = { text };
-      const safeJsonString = JSON.stringify(responseObj);
+      // Ensure the response text is properly escaped for JSON
+      // Handle any characters that might break JSON
+      const safeText = text
+        .replace(/\\/g, '\\\\')  // Escape backslashes first
+        .replace(/"/g, '\\"')    // Escape quotes
+        .replace(/\n/g, '\\n')   // Escape newlines
+        .replace(/\r/g, '\\r')   // Escape carriage returns
+        .replace(/\t/g, '\\t')   // Escape tabs
+        .replace(/\f/g, '\\f');  // Escape form feeds
       
-      // Return the response as properly formatted JSON
+      // Construct a valid JSON response manually to ensure it's complete
+      const safeJsonString = `{"text":"${safeText}"}`;
+      
+      // Verify that we have valid JSON before sending
+      try {
+        JSON.parse(safeJsonString);
+      } catch (jsonError) {
+        console.error("Error with constructed JSON:", jsonError);
+        // Fallback to a simpler, guaranteed valid JSON if there's an issue
+        return new Response(JSON.stringify({ 
+          text: "I processed your request but encountered a formatting issue. Please try again." 
+        }), { 
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      // Return the validated response as properly formatted JSON
       return new Response(safeJsonString, { 
         status: 200,
         headers: { 

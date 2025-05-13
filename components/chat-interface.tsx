@@ -35,8 +35,9 @@ export default function ChatInterface({
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus | null>(null)
   const [isCustomHandling, setIsCustomHandling] = useState(false)
   const [fallbackMessages, setFallbackMessages] = useState<Message[]>([])
-  const [lastQuery, setLastQuery] = useState("")
+  const [lastQuery, setLastQuery] = useState<string>("")
   const [enhancedMessages, setEnhancedMessages] = useState<EnhancedMessage[]>([])
+  const [jsonBuffer, setJsonBuffer] = useState<string>("")
 
   // Fetch processing status periodically
   useEffect(() => {
@@ -102,138 +103,73 @@ export default function ChatInterface({
     onError: (error) => handleErrorWithContext(error, messages, setMessages),
     onResponse: async (response) => {
       // Clear local error when we get a successful response
-      if (response.status === 200) {
-        // Always clear errors on successful response
-        setLocalError(null)
+      setLocalError(null)
+      
+      try {
+        // Clone the response so we can read it multiple times
+        const clonedResponse = response.clone()
+        
+        // Try to parse the response body
+        const text = await clonedResponse.text()
+        let data
         
         try {
-          // Try to parse the response as JSON
-          const data = await response.clone().json();
+          // Attempt to parse the complete response
+          data = JSON.parse(text)
+        } catch (jsonError) {
+          // If direct parsing fails, try adding to our buffer and parsing that
+          const updatedBuffer = jsonBuffer + text
+          setJsonBuffer(updatedBuffer)
           
-          // If we have text in the response, manually add it as a message
-          if (data && data.text) {
-            // Signal that we're handling this response manually
-            setIsCustomHandling(true);
+          try {
+            // Try to parse the complete buffer
+            data = JSON.parse(updatedBuffer)
             
-            // Wait a short time to ensure any pending message updates are processed
-            setTimeout(() => {
-              // Create a new message ID
-              const messageId = Math.random().toString(36).substring(2, 12);
-              
-              // Add the message manually
-              setMessages((currentMessages) => {
-                // Only add if there isn't already a matching assistant message at the end
-                const lastMessage = currentMessages[currentMessages.length - 1];
-                if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content === data.text) {
-                  return currentMessages;
-                }
-                
-                return [
-                  ...currentMessages,
-                  {
-                    id: messageId,
-                    role: "assistant",
-                    content: data.text,
-                  },
-                ];
-              });
-              
-              // Reset the custom handling flag
-              setIsCustomHandling(false);
-            }, 100);
+            // If successful, clear the buffer
+            setJsonBuffer("")
+          } catch (bufferError) {
+            // If still not valid, keep the buffer for the next chunk
+            // and don't throw an error yet
+            console.log("Buffering incomplete JSON chunk, waiting for more data...")
+            return
           }
-        } catch (e) {
-          console.error("Error parsing response:", e);
-          // Let the default handler try to handle it
         }
-      } else {
-        try {
-          // Try to parse the error response as JSON
-          const errorData = await response.clone().json();
+        
+        // If we have text in the response, manually add it as a message
+        if (data && data.text) {
+          // Signal that we're handling this response manually
+          setIsCustomHandling(true)
           
-          // Check if this is our enhanced error format
-          if (errorData && errorData.error) {
-            let errorMessage = errorData.error;
-            const errorType = errorData.errorType || "system";
+          // Wait a short time to ensure any pending message updates are processed
+          setTimeout(() => {
+            // Create a new message ID
+            const messageId = Math.random().toString(36).substring(2, 12)
             
-            setLocalError(new Error(errorMessage));
-            
-            // Add appropriate error message based on type
-            if (errorType === "model") {
-              // AI model error
-              addEnhancedMessage({
-                id: `model-error-${Date.now()}`,
-                role: 'assistant',
-                content: errorMessage,
-                source: 'model-error'
-              });
-              
-              // Also add a system error with details if available
-              if (errorData.errorDetails) {
-                addEnhancedMessage({
-                  id: `system-error-${Date.now()}`,
-                  role: 'assistant',
-                  content: errorData.errorDetails,
-                  source: 'system-error'
-                });
+            // Add the message manually
+            setMessages((currentMessages) => {
+              // Only add if there isn't already a matching assistant message at the end
+              const lastMessage = currentMessages[currentMessages.length - 1]
+              if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content === data.text) {
+                return currentMessages
               }
-            } else if (errorType === "data") {
-              // Data-related error (like missing inventory data)
-              addEnhancedMessage({
-                id: `system-error-${Date.now()}`,
-                role: 'assistant',
-                content: errorMessage,
-                source: 'system-error'
-              });
-            } else {
-              // System error (default)
-              addEnhancedMessage({
-                id: `system-error-${Date.now()}`,
-                role: 'assistant',
-                content: errorMessage,
-                source: 'system-error'
-              });
               
-              // Add details if available
-              if (errorData.errorDetails) {
-                const detailsId = `error-details-${Date.now()}`;
-                addEnhancedMessage({
-                  id: detailsId,
-                  role: 'assistant',
-                  content: errorData.errorDetails,
-                  source: 'system-error'
-                });
-              }
-            }
-          } else {
-            // Fallback for non-JSON error responses
-            const errorMessageContent = response.status === 400 
-              ? "No data available. Please upload inventory data first."
-              : `Server error (${response.status}). Please try again later.`;
+              return [
+                ...currentMessages,
+                {
+                  id: messageId,
+                  role: "assistant",
+                  content: data.text,
+                },
+              ]
+            })
             
-            setLocalError(new Error(`Server returned status ${response.status}: ${response.statusText}`));
-            
-            addEnhancedMessage({
-              id: `error-${Date.now()}`,
-              role: 'assistant',
-              content: errorMessageContent,
-              source: 'system-error'
-            });
-          }
-        } catch (e) {
-          // If we can't parse the JSON, just show a generic error
-          console.error("Error parsing error response:", e);
-          
-          const errorMessageContent = `Server error (${response.status}). Please try again later.`;
-          setLocalError(new Error(`Server returned status ${response.status}: ${response.statusText}`));
-          
-          addEnhancedMessage({
-            id: `error-${Date.now()}`,
-            role: 'assistant',
-            content: errorMessageContent,
-            source: 'system-error'
-          });
+            // Reset the custom handling flag
+            setIsCustomHandling(false)
+          }, 100)
         }
+      } catch (e) {
+        console.error("Error parsing response:", e)
+        // Let the default handler try to handle it
       }
     },
     body: {},
@@ -302,19 +238,22 @@ export default function ChatInterface({
     ) {
       console.log("Parsing error detected - adding as model error")
       
+      // Reset the buffer when we get a parsing error
+      setJsonBuffer("")
+      
       // Get the last user message, prioritizing the lastQuery state which is more reliable
       const queryText = lastQuery || 
-                        (currentMessages.findLast(m => m.role === 'user')?.content || "your query");
+                        (currentMessages.findLast(m => m.role === 'user')?.content || "your query")
       
       // Simple language detection - check if it contains non-Latin characters or common non-English words
       const isNonEnglish = /[^\x00-\x7F]/.test(queryText) || 
-                          /berapa|jenis|ada|pada/.test(queryText);
+                           /berapa|jenis|ada|pada/.test(queryText)
       
-      let fallbackContent = "";
+      let fallbackContent = ""
       if (isNonEnglish) {
-        fallbackContent = `Pertanyaan Anda "${queryText}" terdeteksi, tetapi saya mengalami masalah saat memformat respons. Silakan coba ungkapkan pertanyaan Anda dengan cara yang berbeda atau periksa data inventaris Anda.`;
+        fallbackContent = `Pertanyaan Anda "${queryText}" terdeteksi, tetapi saya mengalami masalah saat memformat respons. Silakan coba ungkapkan pertanyaan Anda dengan cara yang berbeda atau periksa data inventaris Anda.`
       } else {
-        fallbackContent = `I found your query about "${queryText}" but encountered a formatting issue. Please try rephrasing your question.`;
+        fallbackContent = `I found your query about "${queryText}" but encountered a formatting issue. Please try rephrasing your question.`
       }
       
       // Add as a model error message
@@ -323,15 +262,15 @@ export default function ChatInterface({
         role: 'assistant',
         content: fallbackContent,
         source: 'model-error'
-      });
+      })
       
-      // Also add a specific error message
+      // Also add a specific error message for debugging
       addEnhancedMessage({
         id: `system-error-${Date.now()}`,
         role: 'assistant',
-        content: `Failed to parse stream string. Invalid code {"text".`,
+        content: `Failed to parse stream response. Error: ${error.message}`,
         source: 'system-error'
-      });
+      })
       
       // Show a more helpful toast message
       toast({
